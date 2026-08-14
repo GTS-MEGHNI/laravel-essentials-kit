@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\Route;
+
+/*
+|--------------------------------------------------------------------------
+| Client API Routes
+|--------------------------------------------------------------------------
+|
+| Routes consumed by the client applications. These are prefixed with
+| /api/client and named with a client. prefix by routes/api.php.
+|
+*/

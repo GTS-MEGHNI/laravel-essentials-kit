@@ -1,0 +1,23 @@
+    /**
+     * Log slow queries and slow cumulative query time per request.
+     */
+    private function bootObservability(): void
+    {
+        DB::whenQueryingForLongerThan(500, function (Connection $connection): void {
+            Log::warning('Cumulative query time exceeded the threshold.', [
+                'connection' => $connection->getName(),
+            ]);
+        });
+
+        DB::listen(function (QueryExecuted $query): void {
+            if ($query->time < 500) {
+                return;
+            }
+
+            Log::warning('Slow query detected.', [
+                'connection' => $query->connectionName,
+                'sql' => $query->sql,
+                'time_ms' => $query->time,
+            ]);
+        });
+    }

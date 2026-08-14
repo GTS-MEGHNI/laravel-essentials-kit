@@ -1,0 +1,60 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+/**
+ * An Algerian wilaya.
+ *
+ * Codes 01 to 58 are the wilayas proper. Codes 59 to 69 are the delegated
+ * administrative districts created in 2019, whose communes are also listed
+ * under their parent wilaya, so a commune name can legitimately appear twice.
+ *
+ * @property int $id
+ * @property string $code
+ * @property array<string, string> $name
+ * @property-read Collection<int, Commune> $communes
+ */
+class Province extends Model
+{
+    public $timestamps = false;
+
+    protected $fillable = ['code', 'name'];
+
+    /**
+     * The communes belonging to this province.
+     *
+     * @return HasMany<Commune, $this>
+     */
+    public function communes(): HasMany
+    {
+        return $this->hasMany(Commune::class);
+    }
+
+    /**
+     * The name in the given locale, falling back to French.
+     *
+     * French rather than the application fallback locale, because every row is
+     * guaranteed to carry it while a translation into an arbitrary locale is
+     * not.
+     */
+    public function translatedName(?string $locale = null): string
+    {
+        $name = $this->name;
+
+        return $name[$locale ?? app()->getLocale()] ?? $name['fr'] ?? '';
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return ['name' => 'array'];
+    }
+}

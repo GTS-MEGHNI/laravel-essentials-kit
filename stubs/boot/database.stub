@@ -1,0 +1,7 @@
+    /**
+     * Prohibit destructive database commands while running in production.
+     */
+    private function bootDatabase(): void
+    {
+        DB::prohibitDestructiveCommands($this->app->isProduction());
+    }

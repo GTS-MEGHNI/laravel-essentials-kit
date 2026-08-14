@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Support\Otp;
+
+/**
+ * A predictable one time password for tests and local development.
+ *
+ * Always the same digits, so a test can assert on the code without reading it
+ * back out of the cache, and local development does not need a working SMS
+ * gateway to walk through a verification flow.
+ */
+final class FakeOtpGenerator extends OtpGenerator
+{
+    /**
+     * Generate a code of the given number of digits.
+     */
+    public function generate(int $length): string
+    {
+        return str_repeat('1', max($length, 1));
+    }
+}

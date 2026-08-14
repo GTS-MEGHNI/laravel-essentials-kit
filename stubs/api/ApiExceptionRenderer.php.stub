@@ -1,0 +1,169 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Exceptions;
+
+use App\Support\ApiResponse;
+use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Auth\AuthenticationException;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+use Throwable;
+
+final class ApiExceptionRenderer
+{
+    /**
+     * Request patterns mapped to translation keys, per exception category.
+     *
+     * The first matching pattern wins. Categories without a match fall back to
+     * the default message for that exception type.
+     *
+     * @return array<string, array<string, string>>
+     */
+    private function messages(): array
+    {
+        return [
+            'validation' => [],
+            'unauthenticated' => [],
+        ];
+    }
+
+    /**
+     * Convert any uncaught throwable into the API response envelope.
+     */
+    public function __invoke(Throwable $throwable, Request $request): JsonResponse
+    {
+        return match (true) {
+            $throwable instanceof ValidationException => $this->validation($throwable, $request),
+            $throwable instanceof AuthenticationException => $this->unauthenticated($request),
+            $throwable instanceof AuthorizationException => $this->unauthorized($throwable),
+            $throwable instanceof HttpExceptionInterface => $this->http($throwable, $request),
+            default => $this->unexpected($throwable, $request),
+        };
+    }
+
+    /**
+     * Render a failed validation attempt.
+     */
+    private function validation(ValidationException $exception, Request $request): JsonResponse
+    {
+        $errors = $exception->errors();
+        $firstError = collect($errors)->flatten()->first();
+
+        return ApiResponse::error(
+            message: is_string($firstError)
+                ? $firstError
+                : $this->message('validation', $request, 'The given data was invalid.'),
+            status: SymfonyResponse::HTTP_UNPROCESSABLE_ENTITY,
+            errors: $errors,
+        );
+    }
+
+    /**
+     * Render a request made without valid credentials.
+     */
+    private function unauthenticated(Request $request): JsonResponse
+    {
+        return ApiResponse::error(
+            message: $this->message('unauthenticated', $request, 'Unauthenticated.'),
+            status: SymfonyResponse::HTTP_UNAUTHORIZED,
+        );
+    }
+
+    /**
+     * Render a request the authenticated user is not allowed to make.
+     */
+    private function unauthorized(AuthorizationException $exception): JsonResponse
+    {
+        return ApiResponse::error(
+            message: $exception->getMessage() !== '' ? $exception->getMessage() : 'Forbidden.',
+            status: SymfonyResponse::HTTP_FORBIDDEN,
+        );
+    }
+
+    /**
+     * Render an exception that already carries an HTTP status code.
+     */
+    private function http(HttpExceptionInterface $exception, Request $request): JsonResponse
+    {
+        $status = $exception->getStatusCode();
+
+        if ($status >= SymfonyResponse::HTTP_INTERNAL_SERVER_ERROR) {
+            $this->log('API exception occurred.', $exception, $request);
+        }
+
+        return ApiResponse::error(
+            message: $exception->getMessage() !== ''
+                ? $exception->getMessage()
+                : (SymfonyResponse::$statusTexts[$status] ?? 'HTTP error.'),
+            status: $status,
+            meta: $this->debug($exception),
+        );
+    }
+
+    /**
+     * Render anything that was not handled above.
+     */
+    private function unexpected(Throwable $throwable, Request $request): JsonResponse
+    {
+        $this->log('Unhandled API exception occurred.', $throwable, $request);
+
+        return ApiResponse::error(
+            message: app()->isProduction() ? 'Server error.' : $throwable->getMessage(),
+            status: SymfonyResponse::HTTP_INTERNAL_SERVER_ERROR,
+            meta: $this->debug($throwable),
+        );
+    }
+
+    /**
+     * Resolve the translated message for a category, falling back to a default.
+     */
+    private function message(string $category, Request $request, string $default): string
+    {
+        foreach ($this->messages()[$category] ?? [] as $pattern => $key) {
+            if ($request->is($pattern)) {
+                return (string) __($key);
+            }
+        }
+
+        return $default;
+    }
+
+    /**
+     * Build the debug section, which is omitted in production.
+     *
+     * @return array<string, mixed>
+     */
+    private function debug(Throwable $throwable): array
+    {
+        if (app()->isProduction()) {
+            return [];
+        }
+
+        return [
+            'debug' => [
+                'exception' => $throwable::class,
+                'file' => $throwable->getFile(),
+                'line' => $throwable->getLine(),
+            ],
+        ];
+    }
+
+    /**
+     * Log a server side failure with the request context attached.
+     */
+    private function log(string $message, Throwable $throwable, Request $request): void
+    {
+        Log::error($message, [
+            'exception' => $throwable::class,
+            'message' => $throwable->getMessage(),
+            'path' => $request->path(),
+            'method' => $request->method(),
+        ]);
+    }
+}

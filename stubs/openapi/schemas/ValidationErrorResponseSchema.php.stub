@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\OpenApi\Schemas;
+
+use OpenApi\Attributes as OA;
+
+#[OA\Schema(
+    schema: 'ValidationErrorResponse',
+    required: ['success', 'message', 'errors'],
+    properties: [
+        new OA\Property(property: 'success', type: 'boolean', example: false),
+        new OA\Property(property: 'message', type: 'string', example: 'The given data was invalid.'),
+        new OA\Property(
+            property: 'errors',
+            type: 'object',
+            example: ['email' => ['The email field is required.']],
+        ),
+    ],
+    type: 'object',
+)]
+final readonly class ValidationErrorResponseSchema {}

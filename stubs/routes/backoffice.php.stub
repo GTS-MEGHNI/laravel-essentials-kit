@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\Route;
+
+/*
+|--------------------------------------------------------------------------
+| Backoffice API Routes
+|--------------------------------------------------------------------------
+|
+| Routes consumed by the administration applications. These are prefixed
+| with /api/backoffice and named with a backoffice. prefix by routes/api.php.
+|
+*/

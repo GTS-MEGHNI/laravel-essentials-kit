@@ -1,0 +1,8 @@
+
+Route::prefix('client')
+    ->name('client.')
+    ->group(base_path('routes/api/client.php'));
+
+Route::prefix('backoffice')
+    ->name('backoffice.')
+    ->group(base_path('routes/api/backoffice.php'));

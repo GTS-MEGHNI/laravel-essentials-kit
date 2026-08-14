@@ -1,0 +1,52 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+/**
+ * Guard the documentation routes: the UI, the JSON documents, and the assets.
+ *
+ * Set L5_SWAGGER_ENABLED=false to make them return 404 outright. Otherwise set
+ * L5_SWAGGER_USERNAME and L5_SWAGGER_PASSWORD to demand HTTP basic credentials,
+ * which is what production should do. Leaving both unset means the docs are
+ * open, so only do that locally.
+ */
+final class ProtectApiDocs
+{
+    /**
+     * @param  Closure(Request): Response  $next
+     */
+    public function handle(Request $request, Closure $next): Response
+    {
+        abort_unless((bool) config('l5-swagger.enabled', true), 404);
+
+        $username = config('l5-swagger.auth.username');
+        $password = config('l5-swagger.auth.password');
+
+        if (! is_string($username) || $username === '' || ! is_string($password) || $password === '') {
+            return $next($request);
+        }
+
+        if ($this->matches($request, $username, $password)) {
+            return $next($request);
+        }
+
+        return response('Unauthorized.', 401, [
+            'WWW-Authenticate' => 'Basic realm="API documentation"',
+        ]);
+    }
+
+    /**
+     * Compare the supplied credentials without leaking their length in timing.
+     */
+    private function matches(Request $request, string $username, string $password): bool
+    {
+        return hash_equals($username, (string) $request->getUser())
+            && hash_equals($password, (string) $request->getPassword());
+    }
+}

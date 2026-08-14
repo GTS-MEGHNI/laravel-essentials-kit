@@ -1,0 +1,30 @@
+<?php
+
+declare(strict_types=1);
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('provinces', function (Blueprint $table): void {
+            $table->id();
+
+            // The official wilaya code, zero padded so it sorts and displays as
+            // "01" rather than "1". Kept as the natural key every other system
+            // identifies a province by.
+            $table->string('code', 2)->unique();
+
+            // Translations keyed by locale: {"ar": "…", "fr": "…", "en": "…"}.
+            $table->json('name');
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('provinces');
+    }
+};

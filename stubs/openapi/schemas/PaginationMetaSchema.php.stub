@@ -1,0 +1,20 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\OpenApi\Schemas;
+
+use OpenApi\Attributes as OA;
+
+/**
+ * The meta section ApiResponse::paginated() adds to a successful response.
+ */
+#[OA\Schema(
+    schema: 'PaginationMeta',
+    required: ['pagination'],
+    properties: [
+        new OA\Property(property: 'pagination', ref: '#/components/schemas/Pagination'),
+    ],
+    type: 'object',
+)]
+final readonly class PaginationMetaSchema {}

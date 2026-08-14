@@ -1,0 +1,7 @@
+    /**
+     * Use immutable dates so date mutation cannot leak across calls.
+     */
+    private function bootDates(): void
+    {
+        Date::use(CarbonImmutable::class);
+    }

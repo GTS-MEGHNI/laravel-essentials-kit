@@ -1,0 +1,30 @@
+    /**
+     * Bind the one time password generator and store.
+     *
+     * The predictable generator is chosen by environment rather than by a
+     * configuration flag, because a flag reaching production through a copied
+     * environment file would turn every code into the same guessable digits.
+     * Staging gets real codes too, so a verification flow can be rehearsed
+     * there as it will behave in production.
+     */
+    private function registerOtp(): void
+    {
+        $this->app->singleton(
+            OtpGenerator::class,
+            fn (): OtpGenerator => $this->app->environment(['local', 'testing'])
+                ? new FakeOtpGenerator
+                : new RandomOtpGenerator,
+        );
+
+        $this->app->singleton(OtpStore::class, function (): OtpStore {
+            $store = Config::get('otp.store');
+
+            return new OtpStore(
+                $this->app->make(OtpGenerator::class),
+                Cache::store(is_string($store) ? $store : null),
+                Config::integer('otp.length'),
+                Config::integer('otp.ttl'),
+                Config::integer('otp.max_attempts'),
+            );
+        });
+    }

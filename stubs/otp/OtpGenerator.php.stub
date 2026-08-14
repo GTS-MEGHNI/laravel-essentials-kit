@@ -1,0 +1,20 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Support\Otp;
+
+/**
+ * A source of one time password digits.
+ *
+ * Producing the code is the whole responsibility. Storing it, expiring it, and
+ * comparing it belong to OtpStore, so a test can swap the digits for predictable
+ * ones without also replacing the lifecycle it is trying to exercise.
+ */
+abstract class OtpGenerator
+{
+    /**
+     * Generate a code of the given number of digits.
+     */
+    abstract public function generate(int $length): string;
+}

@@ -1,0 +1,22 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\OpenApi\Schemas;
+
+use OpenApi\Attributes as OA;
+
+#[OA\Schema(
+    schema: 'Pagination',
+    required: ['total', 'count', 'per_page', 'current_page', 'last_page', 'has_more_pages'],
+    properties: [
+        new OA\Property(property: 'total', type: 'integer', nullable: true, example: 25),
+        new OA\Property(property: 'count', type: 'integer', example: 10),
+        new OA\Property(property: 'per_page', type: 'integer', example: 10),
+        new OA\Property(property: 'current_page', type: 'integer', example: 1),
+        new OA\Property(property: 'last_page', type: 'integer', nullable: true, example: 3),
+        new OA\Property(property: 'has_more_pages', type: 'boolean', example: true),
+    ],
+    type: 'object',
+)]
+final readonly class PaginationSchema {}

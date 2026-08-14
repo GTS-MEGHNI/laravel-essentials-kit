@@ -1,0 +1,64 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+/**
+ * An Algerian commune.
+ *
+ * The primary key comes from the seed data rather than an autoincrement, so a
+ * commune keeps its id across a fresh install and rows referencing it stay
+ * valid.
+ *
+ * @property int $id
+ * @property int $province_id
+ * @property array<string, string> $name
+ * @property-read Province $province
+ */
+class Commune extends Model
+{
+    public $timestamps = false;
+
+    public $incrementing = false;
+
+    protected $fillable = ['id', 'province_id', 'name'];
+
+    /**
+     * The province this commune belongs to.
+     *
+     * @return BelongsTo<Province, $this>
+     */
+    public function province(): BelongsTo
+    {
+        return $this->belongsTo(Province::class);
+    }
+
+    /**
+     * The name in the given locale, falling back to French.
+     *
+     * French rather than the application fallback locale, because every row is
+     * guaranteed to carry it while a translation into an arbitrary locale is
+     * not.
+     */
+    public function translatedName(?string $locale = null): string
+    {
+        $name = $this->name;
+
+        return $name[$locale ?? app()->getLocale()] ?? $name['fr'] ?? '';
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'id' => 'integer',
+            'name' => 'array',
+        ];
+    }
+}

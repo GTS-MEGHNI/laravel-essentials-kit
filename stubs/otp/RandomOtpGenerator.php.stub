@@ -1,0 +1,29 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Support\Otp;
+
+/**
+ * Cryptographically random one time password digits.
+ */
+final class RandomOtpGenerator extends OtpGenerator
+{
+    /**
+     * Generate a code of the given number of digits.
+     *
+     * Built one digit at a time rather than from a single random_int over the
+     * whole range, so a leading zero is as likely as any other digit and the
+     * length is not capped by the largest integer the platform can hold.
+     */
+    public function generate(int $length): string
+    {
+        $code = '';
+
+        for ($digit = 0; $digit < $length; $digit++) {
+            $code .= (string) random_int(0, 9);
+        }
+
+        return $code;
+    }
+}

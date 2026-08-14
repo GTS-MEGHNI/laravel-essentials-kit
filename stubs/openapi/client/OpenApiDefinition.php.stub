@@ -1,0 +1,14 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\OpenApi\Client;
+
+use OpenApi\Attributes as OA;
+
+#[OA\Info(
+    version: '1.0.0',
+    description: 'Public client API consumed by the mobile and web applications.',
+    title: 'Client API',
+)]
+final readonly class OpenApiDefinition {}

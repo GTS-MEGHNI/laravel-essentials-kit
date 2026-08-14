@@ -1,0 +1,122 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Support;
+
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Contracts\Pagination\Paginator;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Response;
+use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
+
+final class ApiResponse
+{
+    private function __construct() {}
+
+    /**
+     * Build a successful JSON response.
+     *
+     * @param  array<string, mixed>  $meta
+     */
+    public static function success(
+        mixed $data = null,
+        string $message = 'Request completed successfully.',
+        int $status = SymfonyResponse::HTTP_OK,
+        array $meta = [],
+    ): JsonResponse {
+        return self::respond(
+            success: true,
+            message: $message,
+            status: $status,
+            data: $data,
+            meta: $meta,
+        );
+    }
+
+    /**
+     * Build a failed JSON response.
+     *
+     * @param  array<array-key, mixed>|null  $errors
+     * @param  array<string, mixed>  $meta
+     */
+    public static function error(
+        string $message = 'Request failed.',
+        int $status = SymfonyResponse::HTTP_BAD_REQUEST,
+        ?array $errors = null,
+        array $meta = [],
+    ): JsonResponse {
+        return self::respond(
+            success: false,
+            message: $message,
+            status: $status,
+            errors: $errors,
+            meta: $meta,
+        );
+    }
+
+    /**
+     * Build an empty successful response.
+     */
+    public static function noContent(): Response
+    {
+        return response()->noContent();
+    }
+
+    /**
+     * Build a successful JSON response carrying pagination metadata.
+     *
+     * @param  LengthAwarePaginator<int, mixed>|Paginator<int, mixed>  $paginator
+     * @param  array<string, mixed>  $meta
+     */
+    public static function paginated(
+        LengthAwarePaginator|Paginator $paginator,
+        string $message = 'Request completed successfully.',
+        int $status = SymfonyResponse::HTTP_OK,
+        array $meta = [],
+    ): JsonResponse {
+        return self::success(
+            data: $paginator->items(),
+            message: $message,
+            status: $status,
+            meta: array_merge($meta, [
+                'pagination' => [
+                    'total' => $paginator instanceof LengthAwarePaginator ? $paginator->total() : null,
+                    'count' => count($paginator->items()),
+                    'per_page' => $paginator->perPage(),
+                    'current_page' => $paginator->currentPage(),
+                    'last_page' => $paginator instanceof LengthAwarePaginator ? $paginator->lastPage() : null,
+                    'has_more_pages' => $paginator->hasMorePages(),
+                ],
+            ]),
+        );
+    }
+
+    /**
+     * Build the response envelope, omitting every empty section.
+     *
+     * @param  array<array-key, mixed>|null  $errors
+     * @param  array<string, mixed>  $meta
+     */
+    private static function respond(
+        bool $success,
+        string $message,
+        int $status,
+        mixed $data = null,
+        ?array $errors = null,
+        array $meta = [],
+    ): JsonResponse {
+        $payload = [
+            'success' => $success,
+            'message' => $message,
+            'data' => $data,
+            'errors' => $errors,
+            'meta' => $meta !== [] ? $meta : null,
+        ];
+
+        return response()->json(
+            array_filter($payload, static fn (mixed $value): bool => $value !== null),
+            $status,
+        );
+    }
+}

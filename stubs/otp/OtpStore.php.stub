@@ -1,0 +1,120 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Support\Otp;
+
+use Illuminate\Contracts\Cache\Repository;
+use Illuminate\Support\Facades\Hash;
+use InvalidArgumentException;
+
+/**
+ * Issue and verify one time passwords held in the cache.
+ *
+ * Only a hash of the code is stored, and every failed comparison spends one of a
+ * fixed number of attempts, because a six digit code is small enough to guess
+ * outright given unlimited tries or a readable cache dump.
+ */
+final class OtpStore
+{
+    public function __construct(
+        private readonly OtpGenerator $generator,
+        private readonly Repository $cache,
+        private readonly int $length,
+        private readonly int $ttl,
+        private readonly int $maxAttempts,
+    ) {
+        // An empty OTP_LENGTH reads as zero, which would issue empty codes that
+        // verify against anything, so refuse to work rather than degrade.
+        if ($this->length < 4 || $this->ttl < 1 || $this->maxAttempts < 1) {
+            throw new InvalidArgumentException('The one time password configuration is out of range.');
+        }
+    }
+
+    /**
+     * Generate a code for the given identifier and store its hash.
+     *
+     * Any code previously issued for the identifier stops being valid, so a
+     * resend leaves exactly one usable code behind.
+     */
+    public function issue(string $key): string
+    {
+        $code = $this->generator->generate($this->length);
+
+        $this->cache->put($this->codeKey($key), Hash::make($code), $this->ttl);
+        $this->cache->put($this->attemptsKey($key), 0, $this->ttl);
+
+        return $code;
+    }
+
+    /**
+     * Verify a code, consuming it on success and one attempt on failure.
+     *
+     * The code is invalidated once the attempts run out, so a caller that keeps
+     * guessing has to ask for a new one.
+     */
+    public function verify(string $key, string $code): bool
+    {
+        $hash = $this->cache->get($this->codeKey($key));
+
+        if (! is_string($hash)) {
+            return false;
+        }
+
+        if (Hash::check($code, $hash)) {
+            $this->forget($key);
+
+            return true;
+        }
+
+        $spent = $this->cache->get($this->attemptsKey($key));
+        $attempts = (is_int($spent) ? $spent : 0) + 1;
+
+        if ($attempts >= $this->maxAttempts) {
+            $this->forget($key);
+
+            return false;
+        }
+
+        $this->cache->put($this->attemptsKey($key), $attempts, $this->ttl);
+
+        return false;
+    }
+
+    /**
+     * Invalidate the code issued for the given identifier.
+     */
+    public function forget(string $key): void
+    {
+        $this->cache->forget($this->codeKey($key));
+        $this->cache->forget($this->attemptsKey($key));
+    }
+
+    /**
+     * The cache key holding the hashed code.
+     */
+    private function codeKey(string $key): string
+    {
+        return $this->prefix($key).':code';
+    }
+
+    /**
+     * The cache key holding the failed attempt count.
+     */
+    private function attemptsKey(string $key): string
+    {
+        return $this->prefix($key).':attempts';
+    }
+
+    /**
+     * Namespace an identifier into a cache safe key.
+     *
+     * The identifier is usually a phone number or an email address. Hashing it
+     * keeps those out of the cache key itself, and keeps the key within the
+     * length and character set every cache store accepts.
+     */
+    private function prefix(string $key): string
+    {
+        return 'otp:'.hash('xxh128', $key);
+    }
+}

@@ -1,0 +1,18 @@
+
+Route::get('health', function (): JsonResponse {
+    try {
+        DB::connection()->getPdo();
+
+        $database = 'ok';
+    } catch (Throwable) {
+        $database = 'unavailable';
+    }
+
+    return ApiResponse::success(
+        data: [
+            'status' => $database === 'ok' ? 'ok' : 'degraded',
+            'database' => $database,
+        ],
+        message: 'Service is healthy.',
+    );
+})->name('health');

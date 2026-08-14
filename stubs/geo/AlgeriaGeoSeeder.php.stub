@@ -1,0 +1,61 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Database\Seeders;
+
+use App\Models\Commune;
+use App\Models\Province;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\File;
+use RuntimeException;
+
+/**
+ * Seed the Algerian provinces and communes from database/data/algeria.json.
+ *
+ * Safe to run repeatedly: rows are matched on their natural key, so an existing
+ * database is updated rather than duplicated.
+ */
+class AlgeriaGeoSeeder extends Seeder
+{
+    public function run(): void
+    {
+        foreach ($this->provinces() as $province) {
+            /** @var array{code: string, name: array<string, string>, communes: list<array{id: int, name: array<string, string>}>} $province */
+            $model = Province::query()->updateOrCreate(
+                ['code' => $province['code']],
+                ['name' => $province['name']],
+            );
+
+            $communes = array_map(static fn (array $commune): array => [
+                'id' => $commune['id'],
+                'province_id' => $model->id,
+                'name' => json_encode($commune['name'], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            ], $province['communes']);
+
+            Commune::query()->upsert($communes, ['id'], ['province_id', 'name']);
+        }
+    }
+
+    /**
+     * Read the shipped dataset.
+     *
+     * @return array<int, mixed>
+     */
+    private function provinces(): array
+    {
+        $path = database_path('data/algeria.json');
+
+        if (! File::exists($path)) {
+            throw new RuntimeException('The dataset is missing. Expected it at '.$path.'.');
+        }
+
+        $provinces = json_decode(File::get($path), true, 512, JSON_THROW_ON_ERROR);
+
+        if (! is_array($provinces)) {
+            throw new RuntimeException('The dataset at '.$path.' is not a list of provinces.');
+        }
+
+        return array_values($provinces);
+    }
+}

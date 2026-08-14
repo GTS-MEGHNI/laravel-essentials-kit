@@ -1,0 +1,17 @@
+    /**
+     * Apply transport, password, and test isolation defaults.
+     */
+    private function bootSecurity(): void
+    {
+        if ($this->app->isProduction()) {
+            URL::forceScheme('https');
+        }
+
+        Password::defaults(fn (): Password => $this->app->isProduction()
+            ? Password::min(12)->uncompromised()
+            : Password::min(8));
+
+        if ($this->app->runningUnitTests()) {
+            Http::preventStrayRequests();
+        }
+    }

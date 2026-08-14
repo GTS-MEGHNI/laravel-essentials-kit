@@ -1,0 +1,11 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Providers;
+
+{{ imports }}
+
+final class EssentialsServiceProvider extends ServiceProvider
+{{{ register }}{{ boot }}{{ methods }}
+}

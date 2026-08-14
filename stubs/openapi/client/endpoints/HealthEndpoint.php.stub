@@ -1,0 +1,53 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\OpenApi\Client\Endpoints;
+
+use OpenApi\Attributes as OA;
+
+/**
+ * Documents the route the health feature appends to routes/api.php.
+ *
+ * Copy this class as the template for the rest of the client operations: one
+ * final readonly class per endpoint, holding nothing but its attribute.
+ */
+#[OA\Get(
+    path: '/api/health',
+    operationId: 'clientHealth',
+    description: 'Reports whether the application and its database are reachable.',
+    summary: 'Health check',
+    tags: ['Health'],
+    parameters: [
+        new OA\Parameter(ref: '#/components/parameters/AcceptLanguageHeader'),
+    ],
+    responses: [
+        new OA\Response(
+            response: 200,
+            description: 'Service is healthy.',
+            content: new OA\JsonContent(
+                required: ['success', 'message', 'data'],
+                properties: [
+                    new OA\Property(property: 'success', type: 'boolean', example: true),
+                    new OA\Property(property: 'message', type: 'string', example: 'Service is healthy.'),
+                    new OA\Property(
+                        property: 'data',
+                        required: ['status', 'database'],
+                        properties: [
+                            new OA\Property(property: 'status', type: 'string', example: 'ok'),
+                            new OA\Property(property: 'database', type: 'string', example: 'ok'),
+                        ],
+                        type: 'object',
+                    ),
+                ],
+                type: 'object',
+            ),
+        ),
+        new OA\Response(
+            response: 500,
+            description: 'The application could not answer.',
+            content: new OA\JsonContent(ref: '#/components/schemas/ErrorResponse'),
+        ),
+    ],
+)]
+final readonly class HealthEndpoint {}

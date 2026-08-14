@@ -1,0 +1,37 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Support;
+
+final class PhoneNumber
+{
+    private function __construct() {}
+
+    /**
+     * Normalize an Algerian phone number to canonical E.164 form (+213XXXXXXXXX).
+     *
+     * Accepts the `+213…`, `213…`, and `0…` forms so the same number stored in
+     * any of them collapses to a single canonical value, keeping unique indexes
+     * and lookups reliable. Unrecognized values are returned trimmed but
+     * otherwise untouched.
+     */
+    public static function normalize(?string $phone): ?string
+    {
+        if ($phone === null) {
+            return null;
+        }
+
+        // trim() rather than mb_trim(), which only exists from PHP 8.4 and would
+        // fatal in an application running 8.3.
+        $phone = trim($phone);
+
+        return match (true) {
+            $phone === '' => $phone,
+            str_starts_with($phone, '+213') => $phone,
+            str_starts_with($phone, '213') => '+'.$phone,
+            str_starts_with($phone, '0') => '+213'.mb_substr($phone, 1),
+            default => $phone,
+        };
+    }
+}

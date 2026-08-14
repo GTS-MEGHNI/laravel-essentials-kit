@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\OpenApi\Client;
+
+use OpenApi\Attributes as OA;
+
+#[OA\SecurityScheme(
+    securityScheme: 'bearerAuth',
+    type: 'http',
+    bearerFormat: 'Bearer',
+    scheme: 'bearer',
+)]
+final readonly class OpenApiConfig {}

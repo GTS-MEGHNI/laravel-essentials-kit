@@ -1,0 +1,9 @@
+    /**
+     * Surface model mistakes during development instead of hiding them.
+     */
+    private function bootModels(): void
+    {
+        Model::shouldBeStrict(! $this->app->isProduction());
+
+        JsonResource::withoutWrapping();
+    }

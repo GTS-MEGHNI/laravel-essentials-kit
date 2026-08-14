@@ -1,0 +1,56 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Code Length
+    |--------------------------------------------------------------------------
+    |
+    | How many digits an issued code carries. Shorter codes are easier to type
+    | and easier to guess, so the attempt limit below is what keeps a short
+    | code safe rather than its length alone.
+    |
+    */
+
+    'length' => (int) env('OTP_LENGTH', 6),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Lifetime
+    |--------------------------------------------------------------------------
+    |
+    | How long an issued code stays valid, in seconds.
+    |
+    */
+
+    'ttl' => (int) env('OTP_TTL', 300),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Attempt Limit
+    |--------------------------------------------------------------------------
+    |
+    | How many wrong guesses a code survives before it is thrown away. Once the
+    | limit is reached the caller has to request a new code.
+    |
+    */
+
+    'max_attempts' => (int) env('OTP_MAX_ATTEMPTS', 5),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cache Store
+    |--------------------------------------------------------------------------
+    |
+    | Which cache store holds issued codes. Null uses the default store. Do not
+    | point this at an array store outside tests, since every issued code would
+    | be lost between requests.
+    |
+    */
+
+    'store' => env('OTP_STORE'),
+
+];
