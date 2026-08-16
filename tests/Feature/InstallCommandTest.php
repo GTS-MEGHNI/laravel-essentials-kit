@@ -1092,3 +1092,188 @@ it('adds route imports after a declaration in a hand written routes file', funct
 
     expect(Process::run([PHP_BINARY, '-l', $this->appPath.'/routes/api.php'])->successful())->toBeTrue();
 });
+
+it('installs predis and points the environment files at it', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\nREDIS_CLIENT=phpredis\nCACHE_STORE=database\n");
+    $files->put($this->appPath.'/.env.example', "APP_NAME=Laravel\nREDIS_CLIENT=phpredis\nCACHE_STORE=database\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'predis',
+        '--redis-cache' => true,
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    Process::assertRan(fn ($process): bool => str_contains($process->command, 'composer require predis/predis'));
+
+    foreach (['.env', '.env.example'] as $file) {
+        expect($files->get($this->appPath.'/'.$file))
+            ->toContain('REDIS_CLIENT=predis')
+            ->toContain('CACHE_STORE=redis')
+            ->toContain('REDIS_HOST=127.0.0.1')
+            ->toContain('REDIS_PORT=6379')
+            ->not->toContain('REDIS_CLIENT=phpredis')
+            ->not->toContain('CACHE_STORE=database');
+    }
+});
+
+it('installs nothing through composer for the phpredis client', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'phpredis',
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    Process::assertNothingRan();
+
+    expect($files->get($this->appPath.'/.env'))->toContain('REDIS_CLIENT=phpredis');
+});
+
+it('leaves the cache store alone unless redis cache was asked for', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\nCACHE_STORE=database\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'phpredis',
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    expect($files->get($this->appPath.'/.env'))
+        ->toContain('CACHE_STORE=database')
+        ->not->toContain('CACHE_STORE=redis');
+});
+
+it('replaces a commented out redis client rather than declaring it twice', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\n# REDIS_CLIENT=phpredis\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'predis',
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    $contents = $files->get($this->appPath.'/.env');
+
+    expect(substr_count($contents, 'REDIS_CLIENT='))->toBe(1)
+        ->and($contents)->toContain("REDIS_CLIENT=predis\n");
+});
+
+it('declares the redis client when the environment file never mentioned it', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'predis',
+        '--redis-cache' => true,
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    expect($files->get($this->appPath.'/.env'))
+        ->toContain('APP_NAME=Laravel')
+        ->toContain('REDIS_CLIENT=predis')
+        ->toContain('CACHE_STORE=redis');
+});
+
+it('keeps the environment untouched when predis cannot be installed', function (): void {
+    Process::fake(['composer*' => Process::result(exitCode: 1)]);
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'predis',
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    expect($files->get($this->appPath.'/.env'))->toBe("APP_NAME=Laravel\n");
+});
+
+it('keeps redis connection defaults the environment already declares', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\nREDIS_HOST=redis.internal\nREDIS_PASSWORD=secret\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'phpredis',
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    expect($files->get($this->appPath.'/.env'))
+        ->toContain('REDIS_HOST=redis.internal')
+        ->toContain('REDIS_PASSWORD=secret')
+        ->not->toContain('REDIS_HOST=127.0.0.1');
+});
+
+it('configures no redis client when none was asked for', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'none',
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    expect($files->get($this->appPath.'/.env'))->toBe("APP_NAME=Laravel\n");
+});
+
+it('leaves redis alone when every feature is generated', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "APP_NAME=Laravel\n");
+
+    $this->artisan('essentials:install', ['--all' => true, '--no-interaction' => true])->assertSuccessful();
+
+    expect($files->get($this->appPath.'/.env'))->not->toContain('REDIS_CLIENT');
+});
+
+it('rejects a redis client it cannot configure', function (): void {
+    Process::fake();
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'phpiredis',
+        '--no-interaction' => true,
+    ])->assertFailed();
+
+    Process::assertNothingRan();
+});
+
+it('writes the redis client to every environment file that exists', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env.example', "APP_NAME=Laravel\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'phpredis',
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    expect($files->get($this->appPath.'/.env.example'))->toContain('REDIS_CLIENT=phpredis')
+        ->and($files->exists($this->appPath.'/.env'))->toBeFalse();
+});

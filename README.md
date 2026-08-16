@@ -311,6 +311,23 @@ Optionally sets the application timezone to `Africa/Algiers`. The Laravel skelet
 
 A deployment can still override it per environment, and a config that already reads `env()` is left alone.
 
+### Redis
+
+Optionally selects a Redis client and writes it to your environment files. Two clients speak the same protocol, and Laravel supports both:
+
+| Client | Installed by | Notes |
+|---|---|---|
+| `phpredis` | `pecl install redis` | A C extension. Faster, and what Laravel recommends. |
+| `predis` | Composer | Pure PHP. Works anywhere, no extension needed. |
+
+The default answer follows whichever client this machine can already load, but the choice is yours: the installer runs on a development machine, which says nothing about where the application deploys.
+
+Choosing `predis` requires `predis/predis` through Composer. Choosing `phpredis` installs nothing, because building a PECL extension needs root, the PHP development headers, and a `php.ini` edit. The kit prints the command instead, and only when the extension is missing.
+
+A second question offers Redis as the cache store, which sets `CACHE_STORE=redis`. `QUEUE_CONNECTION` and `SESSION_DRIVER` are deliberately left alone. A Redis queue needs a supervised worker, retry and backoff tuning, and usually Horizon, none of which the kit configures, and sessions do not apply to a token authenticated API.
+
+`REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` are added only when your environment files do not already declare them, so real credentials are never overwritten.
+
 ### Quality tooling
 
 Optionally installs Pint, Larastan, Pest with the Laravel and type coverage plugins, and Laravel Boost. It writes `pint.json` and a `phpstan.neon` set to `level: max`, then merges these scripts into your `composer.json` without touching what is already there:
@@ -338,6 +355,7 @@ Every step can be named explicitly, which is what CI and scripted setup should d
 php artisan essentials:install \
     --features=database --features=models --features=dates --features=api \
     --packages=sanctum --packages=permission \
+    --redis=predis --redis-cache \
     --timezone --tooling \
     --no-interaction
 ```
@@ -346,6 +364,8 @@ php artisan essentials:install \
 |---|---|
 | `--features=*` | Features to generate |
 | `--packages=*` | Packages to install |
+| `--redis=` | Configure a Redis client: `none`, `phpredis`, or `predis` |
+| `--redis-cache` | Use Redis as the cache store |
 | `--timezone` | Set the application timezone to `Africa/Algiers` |
 | `--tooling` | Install and configure the quality tooling |
 | `--cleanup` | Remove files a JSON API does not need |

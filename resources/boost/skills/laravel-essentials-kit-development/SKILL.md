@@ -47,7 +47,9 @@ php artisan essentials:install --features=api --no-interaction
 
 Features: `database`, `models`, `dates`, `security`, `observability`, `api`, `route-groups`, `health`, `otp`, `phone`, `geo`.
 
-Pass `--no-interaction` in any scripted context. Without explicit flags a non-interactive run does nothing at all, which is intended. Other steps are flags, not features: `--packages=*`, `--timezone`, `--tooling`, `--cleanup`.
+Pass `--no-interaction` in any scripted context. Without explicit flags a non-interactive run does nothing at all, which is intended. Other steps are flags, not features: `--packages=*`, `--redis=`, `--redis-cache`, `--timezone`, `--tooling`, `--cleanup`.
+
+`--redis=` takes `none`, `phpredis`, or `predis`. It sets `REDIS_CLIENT`, requires `predis/predis` for the predis client, and adds `REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` only when they are absent. `--redis-cache` also sets `CACHE_STORE=redis`. Nothing sets `QUEUE_CONNECTION` or `SESSION_DRIVER`; change those yourself when a worker is actually supervised. `phpredis` is a PECL extension, so the installer never tries to install it.
 
 Do not run `php artisan install:api` first. The installer creates `routes/api.php` and adds `api:` to `withRouting()` itself, without pulling in Sanctum.
 

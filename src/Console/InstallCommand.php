@@ -12,6 +12,7 @@ use GtsMeghni\EssentialsKit\Installers\Cleaner;
 use GtsMeghni\EssentialsKit\Installers\EnvAppender;
 use GtsMeghni\EssentialsKit\Installers\Package;
 use GtsMeghni\EssentialsKit\Installers\PackageInstaller;
+use GtsMeghni\EssentialsKit\Installers\RedisConfigurator;
 use GtsMeghni\EssentialsKit\Installers\RouteAppender;
 use GtsMeghni\EssentialsKit\Installers\TelescopeGuard;
 use GtsMeghni\EssentialsKit\Installers\TimezonePatcher;
@@ -23,6 +24,7 @@ use Illuminate\Filesystem\Filesystem;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\multiselect;
+use function Laravel\Prompts\select;
 
 final class InstallCommand extends Command
 {
@@ -60,6 +62,8 @@ final class InstallCommand extends Command
     protected $signature = 'essentials:install
         {--features=* : The features to generate}
         {--packages=* : The Composer packages to install}
+        {--redis= : Configure Redis with the given client: none, phpredis, or predis}
+        {--redis-cache : Use Redis as the cache store}
         {--tooling : Install Pint, Larastan, Pest, and Boost}
         {--timezone : Set the application timezone to Africa/Algiers}
         {--cleanup : Remove files a JSON API project does not need}
@@ -78,11 +82,16 @@ final class InstallCommand extends Command
     {
         $this->banner();
 
+        if (! $this->validRedisOption()) {
+            return self::FAILURE;
+        }
+
         // Every question is asked before anything is written, so the developer
         // answers them in one sitting rather than being interrupted by minutes
         // of Composer output between prompts.
         $features = $this->selectedFeatures();
         $packages = $this->selectedPackages();
+        $redis = $this->selectedRedis();
         $timezone = $this->wants('timezone', 'Set the application timezone to '.self::TIMEZONE.'?');
         $tooling = $this->wants('tooling', 'Install Pint, Larastan, Pest, and Boost?');
         $cleanup = $this->plannedCleanup($files);
@@ -111,6 +120,7 @@ final class InstallCommand extends Command
         );
 
         $this->installPackages($files, $installer, $packages);
+        $this->configureRedis($files, $installer, $redis);
         $this->installTooling($files, $installer, $tooling);
 
         return self::SUCCESS;
@@ -495,6 +505,148 @@ final class InstallCommand extends Command
             $packages,
             static fn (Package $package): bool => in_array($package->key, $keys, true),
         ));
+    }
+
+    /**
+     * Reject a --redis value that names no client the kit can configure.
+     */
+    private function validRedisOption(): bool
+    {
+        $client = $this->option('redis');
+
+        if ($client === null || $client === '') {
+            return true;
+        }
+
+        $allowed = [RedisConfigurator::NONE, RedisConfigurator::PHPREDIS, RedisConfigurator::PREDIS];
+
+        if (in_array($client, $allowed, true)) {
+            return true;
+        }
+
+        $this->components->error('Unknown --redis client "'.$client.'". Use '.implode(', ', $allowed).'.');
+
+        return false;
+    }
+
+    /**
+     * Resolve the Redis client to configure, prompting when no flag was given.
+     *
+     * Redis is infrastructure rather than generated code, so it is left alone
+     * unless it was asked for. That is why --all does not turn it on.
+     *
+     * @return array{client: string, cache: bool}|null Null when Redis is skipped.
+     */
+    private function selectedRedis(): ?array
+    {
+        $client = $this->option('redis');
+
+        if (is_string($client) && $client !== '') {
+            return $client === RedisConfigurator::NONE
+                ? null
+                : ['client' => $client, 'cache' => $this->option('redis-cache') === true];
+        }
+
+        if (! $this->input->isInteractive()) {
+            return null;
+        }
+
+        if (! confirm(label: 'Will this project use Redis?', default: true)) {
+            return null;
+        }
+
+        /** @var string $client */
+        $client = select(
+            label: 'Which Redis client will this project use?',
+            options: [
+                RedisConfigurator::PHPREDIS => 'phpredis — the PECL extension, faster, installed outside Composer',
+                RedisConfigurator::PREDIS => 'predis — a pure PHP package, installed by Composer',
+            ],
+            default: RedisConfigurator::extensionLoaded()
+                ? RedisConfigurator::PHPREDIS
+                : RedisConfigurator::PREDIS,
+            hint: RedisConfigurator::extensionLoaded()
+                ? 'The phpredis extension is loaded on this machine.'
+                : 'The phpredis extension is not loaded on this machine.',
+        );
+
+        return [
+            'client' => $client,
+            'cache' => confirm(label: 'Use Redis as the cache store?', default: true),
+        ];
+    }
+
+    /**
+     * Install the chosen Redis client and point the environment files at it.
+     *
+     * @param  array{client: string, cache: bool}|null  $redis
+     */
+    private function configureRedis(Filesystem $files, PackageInstaller $installer, ?array $redis): void
+    {
+        if ($redis === null) {
+            return;
+        }
+
+        if ($redis['client'] === RedisConfigurator::PREDIS) {
+            if (! $this->canInstall($files)) {
+                return;
+            }
+
+            $this->components->info('Requiring '.RedisConfigurator::PREDIS_PACKAGE);
+
+            $result = $installer->require([RedisConfigurator::PREDIS_PACKAGE]);
+
+            // The environment is left untouched on failure, so it never names a
+            // client the application cannot load.
+            if (! $result->successful()) {
+                $this->components->error('Composer failed for '.RedisConfigurator::PREDIS_PACKAGE.'. Redis was not configured.');
+                $this->reportFailure($result);
+
+                return;
+            }
+        }
+
+        $present = array_filter(
+            ['.env', '.env.example'],
+            fn (string $file): bool => $files->exists($this->laravel->basePath($file)),
+        );
+
+        if ($present === []) {
+            $this->components->warn('No environment file was found. Set REDIS_CLIENT='.$redis['client'].' yourself.');
+            $this->reportMissingExtension($redis['client']);
+
+            return;
+        }
+
+        $written = (new RedisConfigurator($files, $this->laravel->basePath()))
+            ->configure($redis['client'], $redis['cache']);
+
+        $this->components->info($written === []
+            ? 'Your environment files already select the '.$redis['client'].' client.'
+            : 'Set '.implode(', ', $written).' in your environment files.');
+
+        $this->reportMissingExtension($redis['client']);
+    }
+
+    /**
+     * Say how to install phpredis when the extension is not loaded here.
+     *
+     * The kit only prints the command. Building a PECL extension needs root,
+     * the PHP development headers, and a php.ini edit afterwards, none of which
+     * belong to a Composer process running inside a project.
+     */
+    private function reportMissingExtension(string $client): void
+    {
+        if ($client !== RedisConfigurator::PHPREDIS || RedisConfigurator::extensionLoaded()) {
+            return;
+        }
+
+        $this->components->warn('The phpredis extension is not loaded. Install it with:');
+        $this->components->bulletList([
+            'pecl install redis',
+            'Add extension=redis to your php.ini, then restart PHP',
+            'Docker images can run docker-php-ext-enable redis instead',
+        ]);
     }
 
     /**
