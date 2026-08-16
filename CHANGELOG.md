@@ -1,6 +1,17 @@
 # Release Notes
 
-## [Unreleased](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.0.0...1.x)
+## [Unreleased](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.0.1...HEAD)
+
+## [v1.0.1](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.0.0...v1.0.1) - 2026-08-16
+
+### Added
+
+- Optional Redis step in `essentials:install`. It asks whether the project uses Redis, which client it will use, and whether Redis should be the cache store.
+- Both clients are offered. Choosing `predis` requires `predis/predis` through Composer. Choosing `phpredis` installs nothing, because a PECL extension needs root, the PHP development headers, and a `php.ini` edit, so the command is printed instead and only when the extension is missing.
+- The default answer follows whichever client the machine running the installer can load, but never forces the choice, since a development machine says nothing about where the application deploys.
+- `REDIS_CLIENT` and `CACHE_STORE` are rewritten in `.env` and `.env.example`, including a commented out declaration, so the key is never written twice. `REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` are only added when absent, so real credentials survive. Composer failing for `predis` leaves the environment untouched, so it never names a client the application cannot load.
+- `--redis=none|phpredis|predis` and `--redis-cache` for non-interactive runs. An unknown client fails the command before anything is written, and `--all` leaves Redis alone because it is infrastructure rather than generated code.
+- `QUEUE_CONNECTION` and `SESSION_DRIVER` are deliberately untouched. A Redis queue needs a supervised worker and retry tuning the kit does not configure, and sessions do not apply to a token authenticated API.
 
 ## [v1.0.0](https://github.com/gts-meghni/laravel-essentials-kit/releases/tag/v1.0.0) - 2026-08-14
 
