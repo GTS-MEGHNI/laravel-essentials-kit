@@ -1,6 +1,20 @@
 # Release Notes
 
-## [Unreleased](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.0.1...HEAD)
+## [Unreleased](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.1.0...HEAD)
+
+## [v1.1.0](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.0.1...v1.1.0) - 2026-10-05
+
+### Added
+
+- Optional production Docker deployment step, written into `docker/production` with a `.dockerignore` in the project root: a multi-stage Dockerfile, a compose file running php-fpm, nginx, a queue worker and the scheduler with healthchecks and resource caps, self-announcing entrypoints, php-fpm pool and opcache tuning, a container nginx config, a host nginx config with a maintenance page for the deploy window, and a README covering environment keys, sizing, the timeout ladder and post-deploy verification. Available as `--docker`, and the one step that is not preselected. No CI pipeline is included; the environment file is the build system's job.
+- `trustProxies(at: '*')` in the `bootstrap/app.php` patch, so an application behind a reverse proxy builds `https://` URLs, validates its own signed URLs, and sees real client IPs in the rate limiter and the logs.
+
+### Changed
+
+- The security defaults feature no longer calls `URL::forceScheme('https')`. Forcing the scheme corrects the URLs while leaving `$request->ip()` pointing at the proxy, which keys every client into one rate limit bucket and puts one address in every log line. Trusting the proxy fixes both, and is now part of the API layer patch. An application generated before this change keeps the forced scheme until the line is removed by hand.
+- `essentials:install` exits non-zero when a Composer step fails or cannot run, so CI and scripts no longer read a partial install as a success. The remaining steps still run, and the run ends with an error pointing back at the failure.
+- The missing phpredis warning now appears right after the Redis prompt and again as the last thing the installer prints, instead of mid-run where Composer output scrolled it away. It names the `Class "Redis" not found` failure the developer will hit, and leads with the distribution package (`sudo apt install php8.x-redis`) before PECL.
+- `composer require` now runs with `--with-all-dependencies`, so a fresh skeleton whose lock pins a dependency just past what a new package supports, such as phpunit above Pest's range, resolves instead of failing the install.
 
 ## [v1.0.1](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.0.0...v1.0.1) - 2026-08-16
 
