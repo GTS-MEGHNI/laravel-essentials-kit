@@ -1,0 +1,58 @@
+; Loaded as /usr/local/etc/php-fpm.d/zzz-custom.conf — read AFTER the stock
+; www.conf, so these values win. Without this file php-fpm runs the stock pool:
+; pm = dynamic with pm.max_children = 5, so the 6th concurrent request waits in
+; the listen backlog until the client times out (504).
+
+[www]
+listen                  = 0.0.0.0:9000
+listen.backlog          = 511
+
+; ── Pool sizing ───────────────────────────────────────────────────────────────
+; Rule of thumb:  max_children = (app container RAM x 0.75) / 48MB
+;                 start_servers     = 25% of max_children
+;                 min_spare_servers = 15% of max_children
+;                 max_spare_servers = 50% of max_children
+; A Laravel php-fpm child runs 40-60MB RSS; 25% of RAM is held back for opcache,
+; the OS and burst. Queue workers live in their own container, so the whole app
+; container budget belongs to php-fpm.
+;   512MB -> 8     1 GB -> 16     2 GB -> 24     4 GB -> 48     8 GB -> 90
+; The values below are the 2 GB row, matching APP_MEM_LIMIT=1500m in
+; docker-compose.yml. Adjust to the host, rebuild, deploy.
+;
+; Then check the result against the database: each busy child holds one
+; connection, and postgres allows 97 by default. If
+; max_children + queue containers + 5 exceeds that, lower max_children here
+; instead of raising max_connections.
+pm                      = dynamic
+pm.max_children         = 24
+pm.start_servers        = 6
+pm.min_spare_servers    = 4
+pm.max_spare_servers    = 12
+
+; Recycle children to bound any slow memory growth (gd and image conversions).
+pm.max_requests         = 500
+
+; ── Observability ─────────────────────────────────────────────────────────────
+; /status and /ping are only reachable from inside the docker network — the
+; nginx config never proxies them, and the healthcheck talks to :9000 directly.
+pm.status_path          = /status
+ping.path               = /ping
+ping.response           = pong
+
+; Pass container env vars through to PHP (env_file in compose).
+clear_env               = no
+catch_workers_output    = yes
+decorate_workers_output = no
+
+; ── Timeouts ──────────────────────────────────────────────────────────────────
+; Hard ceiling per request: a stuck worker is killed instead of held until the
+; client gives up. Must be above the nginx fastcgi_read_timeout (60s) so nginx
+; reports the 504 first and the worker is reclaimed right after.
+request_terminate_timeout = 75s
+
+; Anything over 3s gets a full stack trace — that is how you find the endpoints
+; that were timing out. Written to the container's stderr (fd 2) rather than a
+; file on the storage volume, so `docker compose logs app` is the single place to
+; look and nothing accumulates on disk.
+slowlog                 = /proc/self/fd/2
+request_slowlog_timeout = 3s

@@ -43,7 +43,7 @@ Selected defaults are generated into `app/Providers/EssentialsServiceProvider.ph
 | Database safety | `DB::prohibitDestructiveCommands()` in production |
 | Strict models | `Model::shouldBeStrict()` outside production, unwrapped JSON resources |
 | Immutable dates | `Date::use(CarbonImmutable::class)` |
-| Security defaults | Forced HTTPS in production, strong password rules, no stray HTTP calls in tests |
+| Security defaults | Strong password rules, no stray HTTP calls in tests |
 | Slow query logging | Per-query and cumulative query time warnings |
 
 ### API layer
@@ -61,6 +61,8 @@ The installer wires these into your `bootstrap/app.php`, which is where Laravel 
 
 ```php
 ->withMiddleware(function (Middleware $middleware): void {
+    $middleware->trustProxies(at: '*');
+
     $middleware->append(ForceJsonResponse::class);
     $middleware->append(RequestId::class);
 })
@@ -69,6 +71,8 @@ The installer wires these into your `bootstrap/app.php`, which is where Laravel 
     $exceptions->render(new ApiExceptionRenderer);
 })
 ```
+
+`trustProxies(at: '*')` is part of the same patch because an API behind a reverse proxy is broken without it, quietly: Laravel ignores `X-Forwarded-Proto` until the proxy is trusted, so `url()` builds `http://` links, signed URLs 403 against their own signature, and `$request->ip()` returns the proxy, giving every client one rate limit bucket and one address in the logs. `'*'` is correct while the application is only reachable through that proxy; narrow it if the application is ever published directly. This is also why the kit does not call `URL::forceScheme('https')`, which fixes the URLs while leaving the client IP wrong.
 
 Registering from a service provider instead would look tidier, but it breaks wherever the exception handler is decorated. Collision does exactly that in console and test contexts, which would silently disable the envelope in your feature tests. The patch is skipped if it is already present, and if your bootstrap file has been reshaped the installer says so and leaves it alone.
 
@@ -322,7 +326,7 @@ Optionally selects a Redis client and writes it to your environment files. Two c
 
 The default answer follows whichever client this machine can already load, but the choice is yours: the installer runs on a development machine, which says nothing about where the application deploys.
 
-Choosing `predis` requires `predis/predis` through Composer. Choosing `phpredis` installs nothing, because building a PECL extension needs root, the PHP development headers, and a `php.ini` edit. The kit prints the command instead, and only when the extension is missing.
+Choosing `predis` requires `predis/predis` through Composer. Choosing `phpredis` installs nothing, because building a PECL extension needs root, the PHP development headers, and a `php.ini` edit. The kit prints the install command instead, and only when the extension is missing. It warns right after the prompt and again as the last thing the installer prints, since the environment then names a client this PHP cannot load and every Artisan command fails with `Class "Redis" not found` until the extension is installed.
 
 A second question offers Redis as the cache store, which sets `CACHE_STORE=redis`. `QUEUE_CONNECTION` and `SESSION_DRIVER` are deliberately left alone. A Redis queue needs a supervised worker, retry and backoff tuning, and usually Horizon, none of which the kit configures, and sessions do not apply to a token authenticated API.
 
@@ -347,6 +351,47 @@ Optionally removes what a JSON API does not need: Blade views, frontend assets a
 
 This step deletes files permanently, and like every other step it is preselected. It lists every path with a reason before asking, and refuses to run at all when `git status` is not clean or the directory is not a git repository, so there is always a way back. When `routes/web.php` is removed, the `web:` argument is also stripped from `withRouting()` in `bootstrap/app.php`, and `health: '/up'` is stripped once `/api/health` has replaced it.
 
+### Production Docker deployment
+
+Optionally writes a single-host production deployment into `docker/production`, plus a `.dockerignore` in your project root. Nothing in the package reads these files: they are deployment inputs you own and tune, and they are the one step that is not preselected, since most projects add them later than the code.
+
+Four containers, three of them running the same image and differing only in the entrypoint compose gives them:
+
+| Service | Role |
+|---|---|
+| `app` | php-fpm. Its entrypoint waits for the database and cache, runs `migrate --force --isolated`, warms the caches, publishes `public/` into the shared volume, then `exec php-fpm` |
+| `nginx` | Stock image. Serves static files and proxies PHP to `app:9000` |
+| `queue` | One `queue:work` process, restarted by docker when it exits on `--max-time` or `--max-jobs` |
+| `scheduler` | `schedule:work`, so sub-minute tasks fire. Never scale it past one instance |
+
+Requests reach them through nginx on the host, which terminates TLS and proxies to `127.0.0.1:3000`:
+
+```
+Internet -> host nginx (TLS) -> 127.0.0.1:3000 -> nginx container -> app:9000
+```
+
+| Path | Purpose |
+|---|---|
+| `docker/production/Dockerfile` | Multi-stage build. A `quality` stage runs Pint; the `app` stage is last, so a build without `--target` produces the shippable image |
+| `docker/production/docker-compose.yml` | The four services, healthchecks, memory and CPU caps, log rotation, external network and storage volume |
+| `docker/production/entrypoint/` | One entrypoint per role, each announcing every step so a failed deploy names the step that died |
+| `docker/production/php/` | `php.ini`, `opcache.ini`, and a pool config mounted as `zzz-custom.conf` so it beats the stock `pm.max_children = 5` |
+| `docker/production/nginx/default.conf` | Container nginx: fastcgi to `app:9000`, dotfile and project-file denies |
+| `docker/production/vps-nginx/` | Host nginx site config and the maintenance page it serves during a deploy |
+| `docker/production/README.md` | Every variable the compose file reads, the sizing tables, the timeout ladder, and the post-deploy checks |
+
+What it deliberately does not include: a CI pipeline. Whatever builds the image also writes the environment file, and that is specific to your Jenkins, Actions, or shell script. `docker/production/README.md` lists every key it has to produce.
+
+Files ship with `myapp` and `example.com` placeholders and defaults sized for a 4 GB host. Three of them are load-bearing:
+
+- `pm.max_children` and `APP_MEM_LIMIT` move together, `max_children × 48MB + 128MB ≤ APP_MEM_LIMIT`. Raising the pool alone turns a slow request into an OOM kill.
+- The container port is published on `127.0.0.1`. That binding, not your firewall, is what keeps the stack off the internet: docker's DNAT rules are traversed before UFW's filter rules, so a container published on `0.0.0.0` is reachable even with `ufw deny` on the port.
+- The healthchecks probe `GET /api/health` and assert `"database":"ok"` in the body, because the kit's cleanup step removes the framework's `health: '/up'` route. The installer warns if that route is not registered.
+
+A deploy is `docker compose up -d`, never `down`, so only the services whose image changed are recreated and the queue worker gets its `stop_grace_period` to finish the job in flight. The app container is replaced rather than reloaded, so requests fail for as long as its entrypoint takes, typically 15 to 45 seconds dominated by migrations. `artisan down` cannot cover that window, since maintenance mode is rendered by the PHP that is missing; the host nginx maps upstream 502, 503 and 504 onto a static page instead.
+
+An existing file is never replaced without `--force`, so a config already tuned to its host survives a second install run.
+
 ## Non-Interactive Use
 
 Every step can be named explicitly, which is what CI and scripted setup should do:
@@ -356,7 +401,7 @@ php artisan essentials:install \
     --features=database --features=models --features=dates --features=api \
     --packages=sanctum --packages=permission \
     --redis=predis --redis-cache \
-    --timezone --tooling \
+    --timezone --tooling --docker \
     --no-interaction
 ```
 
@@ -368,6 +413,7 @@ php artisan essentials:install \
 | `--redis-cache` | Use Redis as the cache store |
 | `--timezone` | Set the application timezone to `Africa/Algiers` |
 | `--tooling` | Install and configure the quality tooling |
+| `--docker` | Write the production Docker deployment into `docker/production` |
 | `--cleanup` | Remove files a JSON API does not need |
 | `--all` | Generate every feature |
 | `--force` | Overwrite existing files, and allow cleanup on a dirty tree |

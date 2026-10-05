@@ -1,0 +1,206 @@
+# Production deploy compose.
+#
+# The application image is built once from docker/production/Dockerfile
+# (-> ${IMAGE_NAME}:latest) and reused by the app, queue and scheduler services.
+# nginx uses the stock image.
+#
+# Run it from the repository root:
+#   docker compose -f docker/production/docker-compose.yml --env-file .env up -d
+#
+# Deploy with `up -d`, never `down`: compose recreates only the services whose
+# image changed, and the queue worker gets its stop_grace_period to finish the
+# job in flight.
+#
+# The database and cache/queue backends are EXTERNAL containers already running
+# on the shared network; the app resolves them by container name (for example
+# DB_HOST=postgres, REDIS_HOST=redis). Whatever host port those containers
+# publish is irrelevant here, and unusable from inside a container, since that
+# loopback belongs to the container itself.
+#
+# docker/production/README.md lists every variable read below.
+name: ${COMPOSE_PROJECT:-myapp-production}
+
+x-app-image: &app-image ${IMAGE_NAME:-myapp}:latest
+x-env-file: &env-file ${APP_ENV_FILE:-../../.env}
+
+# All services log to stdout and stderr; json-file rotation keeps `docker logs`
+# bounded so a single noisy day cannot fill the host disk.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# ── Resource limits ──────────────────────────────────────────────────────────
+# Every service is capped, because an unbounded container is the whole host's
+# problem: image conversions in the queue would otherwise take RAM away from
+# php-fpm and the kernel, not the operator, picks the victim.
+#
+# APP_MEM_LIMIT is the number pm.max_children is sized from — keep the two in
+# step (max_children x ~48MB + ~128MB opcache and master <= APP_MEM_LIMIT).
+# Raising max_children without raising this limit converts a slow request into an
+# OOM kill.
+#
+# Limits scale with host RAM but are NOT a share of it. Pay the other tenants
+# first, then split what is left:
+#   stack budget = host RAM - database - cache - (OS + docker + CI reserve)
+#   split it app 57% / queue 29% / scheduler 10% / nginx 4%
+# The defaults below are the 4 GB row (768m database + 384m cache + 600m reserve,
+# so roughly a 2.4 GB stack budget). Override per host in the deploy .env; the
+# table is in docker/production/README.md.
+#   mem_limit       hard cap, OOM-kills the container past it
+#   mem_reservation soft floor honoured under host pressure
+#   cpus            fractional core ceiling, not a reservation
+
+services:
+
+  # ── nginx — serves static assets and media, proxies PHP to the app container ─
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: ${CONTAINER_PREFIX:-myapp}_nginx
+    restart: unless-stopped
+    ports:
+      # Loopback only: the host nginx (vps-nginx/site.conf) fronts this.
+      # This binding IS the firewall for this port. Docker publishes ports with
+      # DNAT rules in the nat table's DOCKER chain, which is traversed before
+      # UFW's filter rules — so `ufw deny 3000` would NOT close a port published
+      # on 0.0.0.0. Setting HOST_IP to 0.0.0.0 exposes this container to the
+      # internet with no warning and no UFW rule able to stop it.
+      - "${HOST_IP:-127.0.0.1}:${HOST_PORT:-3000}:80"
+    volumes:
+      # public/ is synced into this shared volume by the app container on start.
+      - public_assets:/var/www/html/public:ro
+      # Files on the public disk live under storage/app/public.
+      - app_storage:/var/www/html/storage:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      # busybox wget (present in nginx:alpine) through the full path
+      # nginx -> app:9000, so an unhealthy nginx means the real request path is
+      # broken, not just that the process is up.
+      #
+      # The generated /api/health route answers 200 with "database":"degraded"
+      # when the database is unreachable, so the body is what is asserted here,
+      # not the status code. A database outage therefore marks this container
+      # unhealthy on purpose.
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/api/health | grep -q '\"database\":\"ok\"' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # Static files and proxying only — nginx needs almost nothing.
+    mem_limit: ${NGINX_MEM_LIMIT:-128m}
+    mem_reservation: ${NGINX_MEM_RESERVATION:-64m}
+    cpus: ${NGINX_CPUS:-0.5}
+    logging: *default-logging
+    networks:
+      - backend
+
+  # ── app — PHP-FPM only. Runs migrations and cache warmup on start ────────────
+  app:
+    image: *app-image
+    container_name: ${CONTAINER_PREFIX:-myapp}_app
+    restart: unless-stopped
+    env_file: *env-file
+    command: ["/usr/local/bin/app-entrypoint"]
+    volumes:
+      - public_assets:/srv/public              # entrypoint syncs public/ here
+      - app_storage:/var/www/html/storage      # uploads, logs, framework caches
+    healthcheck:
+      test: ["CMD-SHELL", "SCRIPT_NAME=/ping SCRIPT_FILENAME=/ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    # Sized WITH pm.max_children (php/php-fpm.conf). 1.5g is roughly 24 children
+    # x 48MB plus opcache and the master process. Change one, change the other.
+    mem_limit: ${APP_MEM_LIMIT:-1500m}
+    mem_reservation: ${APP_MEM_RESERVATION:-768m}
+    cpus: ${APP_CPUS:-1.5}
+    logging: *default-logging
+    networks:
+      - backend
+
+  # ── queue — one `queue:work` process, restarted by docker when it exits ──────
+  queue:
+    image: *app-image
+    container_name: ${CONTAINER_PREFIX:-myapp}_queue
+    restart: unless-stopped
+    env_file: *env-file
+    command: ["/usr/local/bin/queue-entrypoint"]
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - app_storage:/var/www/html/storage
+    healthcheck:
+      # No port to probe: assert the worker process is alive. The process exits on
+      # purpose (--max-time/--max-jobs) and docker restarts it, so retries must be
+      # tolerant enough to span a restart — this catches a worker that stays down,
+      # not one that is cycling.
+      test: ["CMD-SHELL", "pgrep -f 'artisan queue:work' > /dev/null || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    # queue:work finishes the job in flight on SIGTERM; give it room to drain.
+    # Must exceed the worker's --timeout, or docker kills a job mid-flight.
+    stop_grace_period: 120s
+    # Keep the worker's --memory (MB, queue-entrypoint.sh) below this, or docker
+    # kills the process before Laravel can restart it after a bloated job.
+    mem_limit: ${QUEUE_MEM_LIMIT:-768m}
+    mem_reservation: ${QUEUE_MEM_RESERVATION:-256m}
+    cpus: ${QUEUE_CPUS:-1.0}
+    logging: *default-logging
+    networks:
+      - backend
+
+  # ── scheduler — schedule:work daemon. NEVER scale beyond one instance ────────
+  scheduler:
+    image: *app-image
+    container_name: ${CONTAINER_PREFIX:-myapp}_scheduler
+    restart: unless-stopped
+    env_file: *env-file
+    command: ["/usr/local/bin/scheduler-entrypoint"]
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - app_storage:/var/www/html/storage
+    healthcheck:
+      # No port to probe: assert the daemon process itself is alive. If
+      # schedule:work dies, the container keeps running with nothing scheduled —
+      # this is what makes that visible in `docker compose ps`.
+      test: ["CMD-SHELL", "pgrep -f 'artisan schedule:work' > /dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    stop_grace_period: 60s
+    # schedule:work only dispatches; heavy work belongs in queued jobs. If this
+    # container needs more than 256m, a scheduled command is doing work inline.
+    mem_limit: ${SCHEDULER_MEM_LIMIT:-256m}
+    mem_reservation: ${SCHEDULER_MEM_RESERVATION:-128m}
+    cpus: ${SCHEDULER_CPUS:-0.5}
+    logging: *default-logging
+    networks:
+      - backend
+
+volumes:
+  # Persistent app storage (uploads, logs, any ops-placed credential file).
+  # Declared external so compose never creates or replaces it by accident. Create
+  # it once on the host:  docker volume create myapp_storage
+  # When migrating an existing deploy, point STORAGE_VOLUME at the old volume
+  # name so the files already on it are reused.
+  app_storage:
+    external: true
+    name: ${STORAGE_VOLUME:-myapp_storage}
+  # Rebuilt from the image on every start (the app entrypoint publishes public/).
+  public_assets:
+
+networks:
+  backend:
+    external: true
+    name: ${NETWORK_NAME:-global_network}

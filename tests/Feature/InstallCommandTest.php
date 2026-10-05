@@ -165,6 +165,7 @@ PHP);
         ->toContain('use App\Exceptions\ApiExceptionRenderer;')
         ->toContain('use App\Http\Middleware\ForceJsonResponse;')
         ->toContain('use App\Http\Middleware\RequestId;')
+        ->toContain("\$middleware->trustProxies(at: '*');")
         ->toContain('$middleware->append(ForceJsonResponse::class);')
         ->toContain('$middleware->append(RequestId::class);')
         ->toContain('$exceptions->shouldRenderJsonWhen(static fn (): bool => true);')
@@ -363,9 +364,25 @@ it('skips setup commands when composer fails', function (): void {
         '--features' => [],
         '--packages' => ['sanctum'],
         '--no-interaction' => true,
-    ])->assertSuccessful();
+    ])->assertFailed();
 
     Process::assertDidntRun(fn ($process): bool => str_contains($process->command, 'artisan vendor:publish'));
+});
+
+it('fails when composer cannot install the tooling', function (): void {
+    Process::fake([
+        'composer require*' => Process::result(exitCode: 1),
+    ]);
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--tooling' => true,
+        '--no-interaction' => true,
+    ])
+        ->expectsOutputToContain('Composer failed while installing the tooling.')
+        ->assertFailed();
+
+    expect(file_exists($this->appPath.'/pint.json'))->toBeFalse();
 });
 
 it('installs tooling and writes its configuration', function (): void {
@@ -450,7 +467,7 @@ it('refuses to install packages without a composer manifest', function (): void 
         '--features' => [],
         '--packages' => ['sanctum'],
         '--no-interaction' => true,
-    ])->assertSuccessful();
+    ])->assertFailed();
 
     Process::assertNothingRan();
 });
@@ -470,7 +487,7 @@ it('refuses to run composer inside a vendor directory', function (): void {
         '--features' => [],
         '--packages' => ['sanctum'],
         '--no-interaction' => true,
-    ])->assertSuccessful();
+    ])->assertFailed();
 
     Process::assertNothingRan();
 });
@@ -484,7 +501,7 @@ it('refuses to run composer without an artisan file', function (): void {
         '--features' => [],
         '--packages' => ['sanctum'],
         '--no-interaction' => true,
-    ])->assertSuccessful();
+    ])->assertFailed();
 
     Process::assertNothingRan();
 });
@@ -1120,6 +1137,22 @@ it('installs predis and points the environment files at it', function (): void {
     }
 });
 
+it('ends with install instructions when phpredis is not loaded', function (): void {
+    Process::fake();
+
+    (new Filesystem)->put($this->appPath.'/.env', "APP_NAME=Laravel\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--redis' => 'phpredis',
+        '--tooling' => true,
+        '--no-interaction' => true,
+    ])
+        ->expectsOutputToContain('Class "Redis" not found')
+        ->expectsOutputToContain('sudo apt install php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'-redis')
+        ->assertSuccessful();
+})->skip(fn (): bool => extension_loaded('redis'), 'phpredis is loaded, so there is nothing to warn about.');
+
 it('installs nothing through composer for the phpredis client', function (): void {
     Process::fake();
 
@@ -1201,7 +1234,7 @@ it('keeps the environment untouched when predis cannot be installed', function (
         '--features' => [],
         '--redis' => 'predis',
         '--no-interaction' => true,
-    ])->assertSuccessful();
+    ])->assertFailed();
 
     expect($files->get($this->appPath.'/.env'))->toBe("APP_NAME=Laravel\n");
 });

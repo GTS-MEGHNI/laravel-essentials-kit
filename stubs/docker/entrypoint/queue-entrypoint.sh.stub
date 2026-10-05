@@ -1,0 +1,38 @@
+#!/bin/sh
+# queue role: one long-running `queue:work` process, supervised by docker itself
+# (restart: unless-stopped) rather than by supervisord or a dashboard package.
+# Concurrency comes from running more queue containers, not more processes here:
+# one process per container keeps `docker stats`, the memory cap and the database
+# connection count attributable to a single visible unit.
+
+set -e
+umask 0002
+
+cd /var/www/html
+
+run_as_www_data() {
+    su -s /bin/sh www-data -c "$1"
+}
+
+# The app container owns migrations; here we only prime the caches so workers
+# boot with the same compiled config as php-fpm.
+run_as_www_data "php artisan config:cache --no-interaction"
+run_as_www_data "php artisan route:cache --no-interaction"
+run_as_www_data "php artisan event:cache --no-interaction"
+
+# --max-time and --max-jobs make the worker exit on purpose; docker restarts it,
+# so any slow memory growth is bounded without a supervisor.
+# --memory is the worker's own ceiling and must stay below the container's
+# mem_limit, or docker kills the process before Laravel can restart it cleanly.
+# --tries and --backoff must be set here: without them a failing job retries
+# forever.
+exec su -s /bin/sh www-data -c "php artisan queue:work \
+    --queue=${QUEUE_NAMES:-default} \
+    --tries=${QUEUE_TRIES:-3} \
+    --backoff=${QUEUE_BACKOFF:-10} \
+    --timeout=${QUEUE_TIMEOUT:-60} \
+    --sleep=${QUEUE_SLEEP:-3} \
+    --max-jobs=${QUEUE_MAX_JOBS:-500} \
+    --max-time=${QUEUE_MAX_TIME:-3600} \
+    --memory=${QUEUE_WORKER_MEMORY:-192} \
+    --no-interaction"

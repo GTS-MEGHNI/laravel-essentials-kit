@@ -1,0 +1,229 @@
+# =============================================================================
+# Production Dockerfile — single application image, three runtime roles.
+#
+# The final `app` stage is a self-contained PHP-FPM image that plays three roles
+# depending on the command it is started with:
+#   • app       -> php-fpm            (requests are served through the nginx container)
+#   • queue     -> queue:work         (one worker process, docker restarts it)
+#   • scheduler -> schedule:work      (Laravel scheduler daemon, sub-minute tasks)
+#
+# Build it once, without --target, so the LAST stage ships as ${IMAGE_NAME}:latest
+# and every service in docker/production/docker-compose.yml reuses it. The nginx
+# service uses the stock nginx image.
+#
+# The build context is the repository root:
+#   docker build -f docker/production/Dockerfile -t myapp:latest .
+# =============================================================================
+
+# =============================================================================
+# STAGE 1: Composer dependencies (production, no dev)
+# =============================================================================
+FROM composer:2.8 AS composer
+
+# This image runs PHP 8.4, the same major.minor as the runtime stages below.
+# Keep the two in step: resolving against a newer PHP than the runtime installs
+# packages the runtime cannot parse, and the failure only surfaces at boot.
+# Only ext-* platform requirements are ignored here (the composer image lacks
+# intl, gd, redis and friends) — the php version requirement is still enforced,
+# so a drift fails the build instead of the container.
+
+# A build is usually the only workload on the box with no mem_limit or cpus, and
+# on a single VPS it runs next to production. Bound its appetite: composer
+# resolution is the memory spike, MAKEFLAGS below is the CPU spike.
+ENV COMPOSER_MEMORY_LIMIT=512M
+
+WORKDIR /app
+
+COPY composer.json composer.lock ./
+
+# The cache mount survives between builds, so a rebuild after a failed or
+# partial download reuses what already came down instead of refetching every
+# package. /tmp/cache is where the composer image puts its cache.
+RUN --mount=type=cache,target=/tmp/cache \
+    composer install \
+    --no-dev \
+    --no-scripts \
+    --no-autoloader \
+    --ignore-platform-req=ext-* \
+    --prefer-dist
+
+COPY . .
+
+# --no-scripts: skip the post-autoload-dump `package:discover`, which would boot
+# the framework at build time (no .env present, so it fails). Discovery runs
+# lazily on first boot inside the container instead.
+RUN composer dump-autoload --optimize --no-dev --no-scripts --ignore-platform-req=ext-*
+
+
+# =============================================================================
+# STAGE 2: Extension builder — compiles the PHP extensions in a throwaway stage.
+# The toolchain (compilers, -dev headers, PECL scratch) never reaches the final
+# image: only the built .so files and their enable-.ini's are copied out below.
+# =============================================================================
+FROM php:8.4-fpm-alpine AS ext-builder
+
+# docker-php-ext-install compiles with `make -j$(nproc)` by default, which takes
+# every core on the host while php-fpm is still serving requests — the build is
+# uncapped where the containers are not. Leave two cores' worth for production;
+# on a bigger host raise BUILD_JOBS rather than removing this.
+ARG BUILD_JOBS=2
+ENV MAKEFLAGS="-j${BUILD_JOBS}"
+
+# phpredis is pinned and built from its GitHub tarball rather than installed with
+# `pecl install redis`, for two reasons: an unpinned PECL install silently moves
+# to a new extension version on any rebuild, and pecl.php.net is a single point
+# of failure that resolves through a CDN some DNS resolvers cannot follow.
+# Bump this deliberately, and read the phpredis changelog before you do.
+ARG PHPREDIS_VERSION=6.3.0
+
+# pdo_mysql and pdo_pgsql are both built, so the same image serves a MySQL or a
+# PostgreSQL app. Drop the one this project does not use if you want a smaller
+# image; keep the matching client library in the php-base stage in step with it.
+RUN --mount=type=cache,target=/var/cache/apk \
+    --mount=type=cache,target=/etc/apk/cache \
+    apk add \
+        $PHPIZE_DEPS \
+        freetype-dev \
+        gettext-dev \
+        icu-dev \
+        libjpeg-turbo-dev \
+        libpng-dev \
+        libwebp-dev \
+        libzip-dev \
+        oniguruma-dev \
+        postgresql-dev \
+ && docker-php-ext-configure gd \
+        --with-freetype \
+        --with-jpeg \
+        --with-webp \
+ && docker-php-ext-install -j"${BUILD_JOBS}" \
+        bcmath \
+        exif \
+        gd \
+        gettext \
+        intl \
+        mbstring \
+        opcache \
+        pcntl \
+        pdo \
+        pdo_mysql \
+        pdo_pgsql \
+        pgsql \
+        zip \
+ && mkdir -p /usr/src/php/ext/redis \
+ && wget -O /tmp/phpredis.tar.gz \
+        "https://github.com/phpredis/phpredis/archive/refs/tags/${PHPREDIS_VERSION}.tar.gz" \
+ && tar -xzf /tmp/phpredis.tar.gz -C /usr/src/php/ext/redis --strip-components=1 \
+ && rm /tmp/phpredis.tar.gz \
+ && docker-php-ext-install -j"${BUILD_JOBS}" redis
+
+
+# =============================================================================
+# STAGE 3: PHP base — shared by every runtime role
+# =============================================================================
+FROM php:8.4-fpm-alpine AS php-base
+
+# Runtime shared objects the extensions link against, plus:
+#   fcgi   -> cgi-fcgi, used by the app healthcheck to ping php-fpm
+#   shadow -> groupmod/usermod for the fixed UID/GID below
+RUN --mount=type=cache,target=/var/cache/apk \
+    --mount=type=cache,target=/etc/apk/cache \
+    apk add \
+        bash \
+        curl \
+        fcgi \
+        freetype \
+        gettext \
+        icu-libs \
+        libjpeg-turbo \
+        libpng \
+        libpq \
+        libwebp \
+        libzip \
+        oniguruma \
+        postgresql-libs \
+        shadow \
+        tzdata
+
+# Compiled PHP extensions (.so) plus their enable-.ini's from the builder. Both
+# stages use the same base image, so the extension directory path matches.
+COPY --from=ext-builder /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
+COPY --from=ext-builder /usr/local/etc/php/conf.d/      /usr/local/etc/php/conf.d/
+
+# PHP config. Loaded after the copied enable-.ini's, so 99-* wins.
+# zzz-custom.conf is the LAST file read in php-fpm.d, so it overrides www.conf,
+# whose stock pm.max_children = 5 starves the pool under concurrency.
+COPY docker/production/php/php.ini      /usr/local/etc/php/conf.d/99-custom.ini
+COPY docker/production/php/opcache.ini  /usr/local/etc/php/conf.d/99-opcache.ini
+COPY docker/production/php/php-fpm.conf /usr/local/etc/php-fpm.d/zzz-custom.conf
+
+# Consistent non-root UID/GID across host volumes and containers.
+RUN groupmod -g 1000 www-data && usermod -u 1000 -g www-data www-data
+
+WORKDIR /var/www/html
+
+
+# =============================================================================
+# STAGE 4: Quality gate — runs BEFORE the shippable image is built.
+# CI can build `--target quality` to fail fast on style violations. This image is
+# discarded; the BuildKit cache keeps the real build fast.
+#
+# It needs laravel/pint in require-dev and a pint.json in the repository root,
+# which the kit's quality tooling step installs. Delete this stage if the project
+# checks style somewhere else.
+# =============================================================================
+FROM php-base AS quality
+
+COPY --from=composer /usr/bin/composer /usr/bin/composer
+
+RUN --mount=type=cache,target=/var/cache/apk \
+    --mount=type=cache,target=/etc/apk/cache \
+    apk add git
+
+COPY . .
+
+RUN composer install --no-interaction --prefer-dist --no-progress --no-scripts \
+ && vendor/bin/pint --test
+
+
+# =============================================================================
+# STAGE 5: App — the shippable image (php-fpm / queue / scheduler).
+# MUST be the last stage: CI builds without --target, so this is
+# ${IMAGE_NAME}:latest.
+# =============================================================================
+FROM php-base AS app
+
+# Source plus the optimized production autoloader and vendor directory.
+COPY --chown=www-data:www-data . .
+COPY --chown=www-data:www-data --from=composer /app/vendor ./vendor
+
+# .dockerignore excludes storage/, and a fresh storage volume only carries what
+# the image seeded, so create the writable directories here.
+RUN mkdir -p \
+        storage/app/public \
+        storage/logs \
+        storage/framework/cache \
+        storage/framework/sessions \
+        storage/framework/views \
+        bootstrap/cache \
+ && chown -R www-data:www-data storage bootstrap/cache \
+ && chmod -R 775 storage bootstrap/cache
+
+# Entrypoints, one per role.
+COPY docker/production/entrypoint/app-entrypoint.sh       /usr/local/bin/app-entrypoint
+COPY docker/production/entrypoint/queue-entrypoint.sh     /usr/local/bin/queue-entrypoint
+COPY docker/production/entrypoint/scheduler-entrypoint.sh /usr/local/bin/scheduler-entrypoint
+
+RUN chmod +x /usr/local/bin/app-entrypoint \
+             /usr/local/bin/queue-entrypoint \
+             /usr/local/bin/scheduler-entrypoint
+
+EXPOSE 9000
+
+# The healthcheck is defined per service in docker-compose.yml — only the `app`
+# service listens on :9000, while the same image also runs as queue and
+# scheduler.
+
+# Default command runs the php-fpm (app) role; compose overrides it for the
+# queue and scheduler services.
+CMD ["/usr/local/bin/app-entrypoint"]

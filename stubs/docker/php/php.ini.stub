@@ -1,0 +1,33 @@
+[PHP]
+expose_php             = Off
+
+; 256M is generous for API work but keeps image conversions on upload from dying
+; on a large file. It counts toward the RAM budget per php-fpm child — see the
+; sizing note in php-fpm.conf.
+memory_limit           = 256M
+
+; Must stay at or below the nginx client_max_body_size in nginx/default.conf and
+; in vps-nginx/site.conf (both 128M). A larger value here means nginx rejects an
+; upload PHP would have accepted; a smaller one means nginx accepts an upload PHP
+; then rejects.
+upload_max_filesize    = 128M
+post_max_size          = 128M
+max_file_uploads       = 30
+
+; Requests slower than this are killed instead of pinning a worker forever.
+; Kept below php-fpm's request_terminate_timeout (75s) and at the same value as
+; the nginx fastcgi_read_timeout.
+max_execution_time     = 60
+max_input_time         = 60
+
+date.timezone          = UTC
+
+error_reporting        = E_ALL & ~E_DEPRECATED & ~E_STRICT
+log_errors             = On
+display_errors         = Off
+display_startup_errors = Off
+
+; The real client IP arrives via X-Forwarded-For; trusting the proxy is handled by
+; trustProxies() in bootstrap/app.php, nothing to do here.
+realpath_cache_size    = 4096k
+realpath_cache_ttl     = 600

@@ -63,6 +63,12 @@ final class BootstrapPatcher
 
     /**
      * Append the API middleware to the global stack.
+     *
+     * trustProxies() is part of this block because every deployment behind a
+     * reverse proxy needs it and the failure is silent without it: Laravel
+     * ignores X-Forwarded-Proto, so url() builds http:// links, signed URLs 403
+     * against their own signature, and $request->ip() returns the proxy, giving
+     * every client one rate limit bucket and one IP in the logs.
      */
     private function addMiddleware(string $contents): ?string
     {
@@ -70,6 +76,11 @@ final class BootstrapPatcher
             $contents,
             '/(->withMiddleware\(function \(Middleware \$middleware\)[^{]*\{\n)(\h*\/\/\n)?/',
             <<<'PHP'
+                    // Trust every proxy: correct while the application is only
+                    // reachable through a reverse proxy. If it is ever published
+                    // directly, narrow this, or clients can forge X-Forwarded-For.
+                    $middleware->trustProxies(at: '*');
+
                     $middleware->append(ForceJsonResponse::class);
                     $middleware->append(RequestId::class);
 

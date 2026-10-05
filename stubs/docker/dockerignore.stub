@@ -1,0 +1,48 @@
+# Keep local state out of the build context. Anything listed here is invisible to
+# `docker build`, which matters twice: .env or storage/ leaking into the image
+# would ship one environment's secrets and cache files to production, and a
+# changing vendor/ or node_modules/ would bust the layer cache on every build.
+#
+# docker/production/ is deliberately NOT ignored: the Dockerfile copies the php
+# and entrypoint files from it.
+
+# Both forms are needed: a bare pattern matches the context root only, so
+# `.env.*` alone would still copy a deploy env file written next to the compose
+# file straight into the image.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+
+.git
+.gitignore
+.github
+
+vendor
+node_modules
+
+# Recreated with the right ownership by the Dockerfile, and carried across
+# deploys by the external storage volume.
+storage
+bootstrap/cache
+
+# Test and tooling artifacts.
+tests
+.phpunit.cache
+.phpunit.result.cache
+.pest
+coverage
+build
+
+# Editor and OS noise.
+.idea
+.vscode
+.fleet
+.DS_Store
+Thumbs.db
+
+# Documentation and local compose files, none of which the image needs.
+docker-compose.override.yml
+*.md
+!README.md

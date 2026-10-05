@@ -1,0 +1,127 @@
+# Inner nginx (container). TLS is terminated by the host nginx on the VPS, which
+# proxies to 127.0.0.1:3000 -> this container's :80. See ../vps-nginx/ for the
+# matching host side config.
+
+# Trust the X-Forwarded-For sent by the host reverse proxy so access logs and
+# $remote_addr show the real client instead of the docker bridge gateway.
+set_real_ip_from 10.0.0.0/8;
+set_real_ip_from 172.16.0.0/12;
+set_real_ip_from 192.168.0.0/16;
+real_ip_header   X-Forwarded-For;
+real_ip_recursive on;
+
+# Note what this does to PHP: REMOTE_ADDR reaching the app is now the real client,
+# not the docker gateway. So Laravel's trustProxies() must be `at: '*'` — a subnet
+# allow-list would no longer match the connecting address and the X-Forwarded-*
+# headers would be discarded. Safe because :3000 is bound to 127.0.0.1, so only
+# the host nginx can reach this server.
+
+server {
+    listen 80;
+    server_name _;
+
+    root  /var/www/html/public;
+    index index.php;
+
+    # Keep in sync with upload_max_filesize / post_max_size in php/php.ini.
+    client_max_body_size 128M;
+
+    # Buffer request bodies to disk instead of streaming them straight into a
+    # php-fpm child: a slow uploader must not hold a worker for the whole upload.
+    client_body_buffer_size 256k;
+    client_body_timeout     60s;
+
+    sendfile   on;
+    tcp_nopush on;
+    keepalive_timeout 65;
+
+    access_log /dev/stdout;
+    error_log  /dev/stderr warn;
+
+    # ── Security headers ──────────────────────────────────────────────────────
+    add_header X-Frame-Options        "SAMEORIGIN"                      always;
+    add_header X-Content-Type-Options "nosniff"                         always;
+    add_header Referrer-Policy        "strict-origin-when-cross-origin" always;
+
+    # ── Gzip ──────────────────────────────────────────────────────────────────
+    gzip            on;
+    gzip_comp_level 5;
+    gzip_min_length 256;
+    gzip_proxied    any;
+    gzip_vary       on;
+    gzip_types
+        text/plain text/css text/xml text/javascript
+        application/json application/javascript application/xml
+        application/rss+xml image/svg+xml;
+
+    # ── Health endpoint ───────────────────────────────────────────────────────
+    # The kit's generated route, GET /api/health. The framework's health: '/up'
+    # route is removed by the installer's cleanup step, so nothing here or in the
+    # compose healthchecks may depend on /up.
+    location = /api/health {
+        try_files $uri /index.php?$query_string;
+        access_log off;
+    }
+
+    # ── Files on the public disk (storage/app/public, via public/storage) ──────
+    # `^~` so this wins over the static-asset regex below: these files live on the
+    # storage volume, not under the public root.
+    location ^~ /storage/ {
+        alias /var/www/html/storage/app/public/;
+        try_files $uri $uri/ =404;
+        expires 30d;
+        add_header Cache-Control "public";
+        access_log off;
+    }
+
+    # ── Static assets — long cache ────────────────────────────────────────────
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|webp|woff2?|ttf|eot|map)$ {
+        expires    1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+        try_files  $uri =404;
+    }
+
+    # ── Front controller ──────────────────────────────────────────────────────
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    # ── PHP-FPM (app container) ───────────────────────────────────────────────
+    location ~ \.php$ {
+        try_files $uri =404;
+
+        include       fastcgi_params;
+        fastcgi_pass  app:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param DOCUMENT_ROOT   $document_root;
+
+        # 60s here, 75s request_terminate_timeout in php-fpm: nginx returns the
+        # 504 first, php-fpm then reclaims the worker.
+        fastcgi_connect_timeout 5s;
+        fastcgi_send_timeout    60s;
+        fastcgi_read_timeout    60s;
+
+        # Buffer the response so a slow client drains from nginx, not from the
+        # php-fpm worker.
+        fastcgi_buffering   on;
+        fastcgi_buffer_size 32k;
+        fastcgi_buffers     16 16k;
+
+        fastcgi_hide_header X-Powered-By;
+    }
+
+    # ── php-fpm status and ping are NOT exposed through nginx on purpose ───────
+
+    # ── Deny hidden files (.env, .git, ...) and sensitive project files ───────
+    location ~ /\.(?!well-known).* {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    location ~* (composer\.(json|lock)|package(-lock)?\.json|\.env.*|artisan)$ {
+        deny all;
+    }
+}

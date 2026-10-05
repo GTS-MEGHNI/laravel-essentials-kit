@@ -26,12 +26,16 @@ final class PackageInstaller
     /**
      * Require the given Composer packages in one invocation.
      *
+     * Locked dependencies may move, because a fresh skeleton's lock can sit
+     * just past what a new package supports: phpunit locked above the range
+     * Pest allows fails the whole install unless phpunit can step back.
+     *
      * @param  list<string>  $packages
      */
     public function require(array $packages, bool $dev = false): ProcessResult
     {
         return $this->run(sprintf(
-            'composer require %s%s --no-interaction',
+            'composer require %s%s --with-all-dependencies --no-interaction',
             $dev ? '--dev ' : '',
             implode(' ', $packages),
         ));

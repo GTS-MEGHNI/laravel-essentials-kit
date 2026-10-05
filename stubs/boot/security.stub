@@ -1,12 +1,14 @@
     /**
-     * Apply transport, password, and test isolation defaults.
+     * Apply password and test isolation defaults.
+     *
+     * HTTPS is not forced here on purpose. Forcing the scheme hides the real
+     * problem behind a proxy, which is that the application does not trust the
+     * X-Forwarded-* headers: the URLs come out right while $request->ip() still
+     * returns the proxy, so the rate limiter keys every client the same and the
+     * logs show one address. trustProxies() in bootstrap/app.php fixes all of it.
      */
     private function bootSecurity(): void
     {
-        if ($this->app->isProduction()) {
-            URL::forceScheme('https');
-        }
-
         Password::defaults(fn (): Password => $this->app->isProduction()
             ? Password::min(12)->uncompromised()
             : Password::min(8));

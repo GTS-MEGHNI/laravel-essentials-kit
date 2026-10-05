@@ -1,0 +1,27 @@
+#!/bin/sh
+# scheduler role: the `schedule:work` daemon.
+#
+# schedule:work replaces a crond + `schedule:run` pair and fires sub-minute tasks
+# (everyTenSeconds and friends) natively, which a one-minute cron entry cannot do
+# reliably.
+#
+# Single instance only — never scale this service, or every scheduled command
+# runs twice.
+#
+# Delete this service from docker-compose.yml if the app schedules nothing.
+
+set -e
+umask 0002
+
+cd /var/www/html
+
+run_as_www_data() {
+    su -s /bin/sh www-data -c "$1"
+}
+
+# The app container owns migrations; here we only prime the caches.
+run_as_www_data "php artisan config:cache --no-interaction"
+run_as_www_data "php artisan route:cache --no-interaction"
+run_as_www_data "php artisan event:cache --no-interaction"
+
+exec su -s /bin/sh www-data -c "php artisan schedule:work --no-interaction"

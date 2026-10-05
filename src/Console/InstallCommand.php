@@ -9,6 +9,7 @@ use GtsMeghni\EssentialsKit\Generators\ProviderGenerator;
 use GtsMeghni\EssentialsKit\Installers\ApiRoutesFile;
 use GtsMeghni\EssentialsKit\Installers\BootstrapPatcher;
 use GtsMeghni\EssentialsKit\Installers\Cleaner;
+use GtsMeghni\EssentialsKit\Installers\DockerStack;
 use GtsMeghni\EssentialsKit\Installers\EnvAppender;
 use GtsMeghni\EssentialsKit\Installers\Package;
 use GtsMeghni\EssentialsKit\Installers\PackageInstaller;
@@ -65,10 +66,19 @@ final class InstallCommand extends Command
         {--redis= : Configure Redis with the given client: none, phpredis, or predis}
         {--redis-cache : Use Redis as the cache store}
         {--tooling : Install Pint, Larastan, Pest, and Boost}
+        {--docker : Write the production Docker deployment files}
         {--timezone : Set the application timezone to Africa/Algiers}
         {--cleanup : Remove files a JSON API project does not need}
         {--all : Generate every feature without prompting}
         {--force : Overwrite files that already exist}';
+
+    /**
+     * Whether a Composer step failed, so the run exits non-zero.
+     *
+     * The remaining steps still run, since they do not depend on the one that
+     * failed, but a caller such as CI must not read the run as a success.
+     */
+    private bool $composerFailed = false;
 
     /**
      * The command description.
@@ -94,6 +104,7 @@ final class InstallCommand extends Command
         $redis = $this->selectedRedis();
         $timezone = $this->wants('timezone', 'Set the application timezone to '.self::TIMEZONE.'?');
         $tooling = $this->wants('tooling', 'Install Pint, Larastan, Pest, and Boost?');
+        $docker = $this->wants('docker', 'Write the production Docker deployment files into docker/production?');
         $cleanup = $this->plannedCleanup($files);
 
         $this->setTimezone($files, $timezone);
@@ -109,6 +120,10 @@ final class InstallCommand extends Command
 
         $this->runCleanup($files, $cleanup);
 
+        // After the cleanup step, so the warning about the health route reads the
+        // routes file in its final shape.
+        $this->writeDockerStack($files, $docker);
+
         // Composer runs last. It is the slowest and the only step that can fail
         // for reasons outside this package, so everything the kit owns is
         // already on disk by the time the network is involved.
@@ -122,6 +137,17 @@ final class InstallCommand extends Command
         $this->installPackages($files, $installer, $packages);
         $this->configureRedis($files, $installer, $redis);
         $this->installTooling($files, $installer, $tooling);
+
+        // Last, so minutes of Composer output cannot scroll it out of view: the
+        // environment now names a client this PHP cannot load, and every
+        // Artisan command fails until the extension is installed.
+        $this->reportMissingExtension($redis);
+
+        if ($this->composerFailed) {
+            $this->components->error('The installation finished with errors. Fix the Composer failures above and rerun.');
+
+            return self::FAILURE;
+        }
 
         return self::SUCCESS;
     }
@@ -303,6 +329,8 @@ final class InstallCommand extends Command
                 .'Run this command from a real Laravel application root.',
             );
 
+            $this->composerFailed = true;
+
             return false;
         }
 
@@ -315,6 +343,8 @@ final class InstallCommand extends Command
                 'No '.$marker.' was found in '.$basePath.', so this does not look like a Laravel application root. '
                 .'Composer was not run.',
             );
+
+            $this->composerFailed = true;
 
             return false;
         }
@@ -332,6 +362,49 @@ final class InstallCommand extends Command
         }
 
         return $this->input->isInteractive() && confirm(label: $question, default: true);
+    }
+
+    /**
+     * Write the production Docker deployment files.
+     *
+     * These are deployment inputs rather than application code: nothing in the
+     * kit reads them, and the developer owns every value in them. The two
+     * warnings below are the settings the stack silently depends on.
+     */
+    private function writeDockerStack(Filesystem $files, bool $wanted): void
+    {
+        if (! $wanted) {
+            return;
+        }
+
+        $stack = new DockerStack($files, $this->laravel->basePath(), __DIR__.'/../../stubs');
+        $result = $stack->write($this->option('force') === true);
+
+        foreach ($result['created'] as $target) {
+            $this->components->info('Created '.$target);
+        }
+
+        foreach ($result['kept'] as $target) {
+            $this->components->warn('Kept the existing '.$target.'.');
+        }
+
+        if (! $stack->trustsProxies()) {
+            $this->components->warn(
+                'Add $middleware->trustProxies(at: \'*\') to bootstrap/app.php. '
+                .'Behind the two nginx layers, an app that does not trust the proxy builds http:// URLs, '
+                .'rejects its own signed URLs, and sees the proxy as every client.',
+            );
+        }
+
+        if (! $stack->hasHealthRoute()) {
+            $this->components->warn(
+                'The container healthchecks probe GET /api/health, which is not registered. '
+                .'Generate the health endpoint feature, or point the probes in '
+                .'docker/production/docker-compose.yml and nginx/default.conf at a route that exists.',
+            );
+        }
+
+        $this->components->info('Read docker/production/README.md before the first deploy.');
     }
 
     /**
@@ -364,6 +437,7 @@ final class InstallCommand extends Command
             if (! $result->successful()) {
                 $this->components->error('Composer failed for '.implode(', ', $names).'. Skipping their setup commands.');
                 $this->reportFailure($result);
+                $this->composerFailed = true;
 
                 continue;
             }
@@ -570,6 +644,10 @@ final class InstallCommand extends Command
                 : 'The phpredis extension is not loaded on this machine.',
         );
 
+        if ($client === RedisConfigurator::PHPREDIS && ! RedisConfigurator::extensionLoaded()) {
+            $this->components->warn('phpredis is not installed on this machine. Artisan will fail locally until it is; the install command is shown at the end.');
+        }
+
         return [
             'client' => $client,
             'cache' => confirm(label: 'Use Redis as the cache store?', default: true),
@@ -601,6 +679,7 @@ final class InstallCommand extends Command
             if (! $result->successful()) {
                 $this->components->error('Composer failed for '.RedisConfigurator::PREDIS_PACKAGE.'. Redis was not configured.');
                 $this->reportFailure($result);
+                $this->composerFailed = true;
 
                 return;
             }
@@ -613,7 +692,6 @@ final class InstallCommand extends Command
 
         if ($present === []) {
             $this->components->warn('No environment file was found. Set REDIS_CLIENT='.$redis['client'].' yourself.');
-            $this->reportMissingExtension($redis['client']);
 
             return;
         }
@@ -624,28 +702,32 @@ final class InstallCommand extends Command
         $this->components->info($written === []
             ? 'Your environment files already select the '.$redis['client'].' client.'
             : 'Set '.implode(', ', $written).' in your environment files.');
-
-        $this->reportMissingExtension($redis['client']);
     }
 
     /**
      * Say how to install phpredis when the extension is not loaded here.
      *
-     * The kit only prints the command. Building a PECL extension needs root,
-     * the PHP development headers, and a php.ini edit afterwards, none of which
-     * belong to a Composer process running inside a project.
+     * The kit only prints the command. Installing a PHP extension needs root,
+     * which does not belong to a Composer process running inside a project.
+     *
+     * @param  array{client: string, cache: bool}|null  $redis
      */
-    private function reportMissingExtension(string $client): void
+    private function reportMissingExtension(?array $redis): void
     {
-        if ($client !== RedisConfigurator::PHPREDIS || RedisConfigurator::extensionLoaded()) {
+        if ($redis === null || $redis['client'] !== RedisConfigurator::PHPREDIS || RedisConfigurator::extensionLoaded()) {
             return;
         }
 
-        $this->components->warn('The phpredis extension is not loaded. Install it with:');
+        $this->components->warn(
+            'The phpredis extension is not installed for PHP '.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.' on this machine. '
+            .'Your environment now sets REDIS_CLIENT=phpredis, so php artisan fails with Class "Redis" not found until you install it:',
+        );
         $this->components->bulletList([
-            'pecl install redis',
-            'Add extension=redis to your php.ini, then restart PHP',
-            'Docker images can run docker-php-ext-enable redis instead',
+            'Debian or Ubuntu: sudo apt install php'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'-redis',
+            'macOS with Homebrew PHP: pecl install redis',
+            'Anywhere else: pecl install redis, then add extension=redis to your php.ini',
+            'Docker images: docker-php-ext-enable redis',
+            'Or rerun with --redis=predis, which needs no extension',
         ]);
     }
 
@@ -675,6 +757,7 @@ final class InstallCommand extends Command
         if (! $result->successful()) {
             $this->components->error('Composer failed while installing the tooling.');
             $this->reportFailure($result);
+            $this->composerFailed = true;
 
             return;
         }

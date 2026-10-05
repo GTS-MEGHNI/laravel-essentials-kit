@@ -1,0 +1,21 @@
+[opcache]
+opcache.enable                  = 1
+opcache.enable_cli              = 0
+opcache.memory_consumption      = 192
+opcache.interned_strings_buffer = 16
+opcache.max_accelerated_files   = 20000
+
+; The image is immutable — source never changes at runtime — so never stat files
+; looking for changes. This is the single biggest opcache win and it is only safe
+; because a deploy replaces the whole container.
+opcache.validate_timestamps     = 0
+opcache.revalidate_freq         = 0
+
+; Needed by packages that read docblock annotations at runtime.
+opcache.save_comments           = 1
+opcache.fast_shutdown           = 1
+
+; Optional extra ~5% on PHP-heavy paths. Left off by default: enable only after
+; a load test, JIT bugs are hard to diagnose in production.
+; opcache.jit                   = tracing
+; opcache.jit_buffer_size       = 64M

@@ -96,10 +96,9 @@ final class Feature
             new self(
                 key: 'security',
                 label: 'Security defaults',
-                description: 'Force HTTPS in production, strong password rules, and no stray HTTP calls in tests.',
+                description: 'Strong password rules and no stray HTTP calls in tests.',
                 imports: [
                     'Illuminate\Support\Facades\Http',
-                    'Illuminate\Support\Facades\URL',
                     'Illuminate\Validation\Rules\Password',
                 ],
             ),

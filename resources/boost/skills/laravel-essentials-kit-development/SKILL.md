@@ -36,6 +36,7 @@ Check for generated files before installing anything:
 - `app/Models/Province.php`, `app/Models/Commune.php`: Algerian administrative division, seeded from `database/data/algeria.json`
 - `routes/api/client.php`, `routes/api/backoffice.php`: route groups mounted from `routes/api.php`
 - `app/OpenApi/`: OpenAPI attribute classes, present when `darkaonline/l5-swagger` was installed
+- `docker/production/`: the production deployment, present when the docker step has run
 
 If the relevant file exists, edit it. Do not re-run the installer to change behavior; re-running requires `--force` and overwrites local edits.
 
@@ -47,7 +48,7 @@ php artisan essentials:install --features=api --no-interaction
 
 Features: `database`, `models`, `dates`, `security`, `observability`, `api`, `route-groups`, `health`, `otp`, `phone`, `geo`.
 
-Pass `--no-interaction` in any scripted context. Without explicit flags a non-interactive run does nothing at all, which is intended. Other steps are flags, not features: `--packages=*`, `--redis=`, `--redis-cache`, `--timezone`, `--tooling`, `--cleanup`.
+Pass `--no-interaction` in any scripted context. Without explicit flags a non-interactive run does nothing at all, which is intended. Other steps are flags, not features: `--packages=*`, `--redis=`, `--redis-cache`, `--timezone`, `--tooling`, `--docker`, `--cleanup`.
 
 `--redis=` takes `none`, `phpredis`, or `predis`. It sets `REDIS_CLIENT`, requires `predis/predis` for the predis client, and adds `REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` only when they are absent. `--redis-cache` also sets `CACHE_STORE=redis`. Nothing sets `QUEUE_CONNECTION` or `SESSION_DRIVER`; change those yourself when a worker is actually supervised. `phpredis` is a PECL extension, so the installer never tries to install it.
 
@@ -68,7 +69,7 @@ Do not add per-controller try/catch blocks. `ApiExceptionRenderer` already conve
 
 To vary error messages by route group, edit the `messages()` method in `ApiExceptionRenderer`.
 
-The API middleware and exception rendering are wired in `bootstrap/app.php`, not in a service provider.
+The API middleware and exception rendering are wired in `bootstrap/app.php`, not in a service provider. That patch also adds `$middleware->trustProxies(at: '*')`, which is what makes `https://` URLs, signed URLs, and real client IPs work behind a reverse proxy. Do not replace it with `URL::forceScheme('https')`: that corrects the URLs while `$request->ip()` still returns the proxy, so the rate limiter keys every client the same and the logs show one address. Narrow the `'*'` only if the application becomes reachable without going through the proxy.
 
 ### 4. Document endpoints
 
@@ -126,6 +127,23 @@ Delivery is not part of the feature. Send the code from application code, whethe
 
 Codes are `111111` under `local` and `testing`, and random everywhere else, including staging. There is no configuration flag for this and none should be added: a flag copied into production would make every code guessable. Tests can rely on `111111` without arranging anything.
 
+### 10. Treat the production deployment as owned config
+
+`docker/production/` is written by `--docker` and read by nothing in the package. Edit the files; never re-run the installer to change them, and note that a second run keeps every existing file unless `--force` is passed.
+
+`docker/production/README.md` is the reference for environment keys, sizing tables, the timeout ladder, and post-deploy checks. Read it before changing a value there.
+
+Four constraints hold across those files:
+
+- `pm.max_children` in `php/php-fpm.conf` and `APP_MEM_LIMIT` in `docker-compose.yml` move together: `max_children x 48MB + 128MB <= APP_MEM_LIMIT`. Raising the pool alone converts a slow request into an OOM kill.
+- The published port stays on `127.0.0.1`. Docker's DNAT rules run before UFW's filter rules, so `HOST_IP=0.0.0.0` exposes the stack to the internet and no firewall rule takes it back.
+- Healthchecks probe `GET /api/health` and assert `"database":"ok"` in the body, never `/up`.
+- Deploy with `docker compose up -d`, never `down`, or the queue worker loses the job in flight and every service is recreated.
+
+`env()` outside `config/` returns `null` in this deployment, because the entrypoint runs `config:cache` and the framework then never reads the environment file again. It cannot reproduce locally. Use `config('services.foo.key')` in application code, and add the `config/` entry in the same commit as a new environment key.
+
+No CI pipeline ships with the step. Whatever builds the image must also write the environment file the compose file and containers read.
+
 ## Rules, References, and Templates
 
 Read before executing:
@@ -144,3 +162,5 @@ Read before executing:
 - do not re-run the installer with `--force` to tweak behavior, since it discards local edits
 - do not wrap controller bodies in try/catch when the API feature is installed
 - do not use the cleanup step on a repository with uncommitted changes
+- do not call `env()` outside `config/` in an application deployed with the docker step
+- do not point a healthcheck, probe, or uptime monitor at `/up`; that route is removed

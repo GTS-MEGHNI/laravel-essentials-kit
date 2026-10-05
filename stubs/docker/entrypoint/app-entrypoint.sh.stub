@@ -1,0 +1,159 @@
+#!/bin/sh
+# app role: prepare the app (permissions, caches, migrations), publish public/
+# into the volume nginx serves from, then hand the container over to php-fpm.
+
+set -e
+umask 0002
+
+cd /var/www/html
+
+# Every step announces itself before running, and a failure names the step that
+# died. Without this, `set -e` kills the container with no indication of which
+# command failed: the container disappears before its first healthcheck probe and
+# `docker logs` shows only partial output.
+step() {
+    echo "[entrypoint] $*"
+}
+
+fail() {
+    echo "[entrypoint] FAILED: $*" >&2
+    exit 1
+}
+
+run_as_www_data() {
+    su -s /bin/sh www-data -c "$1"
+}
+
+fix_laravel_permissions() {
+    chown -R www-data:www-data storage bootstrap/cache
+    find storage bootstrap/cache -type d -exec chmod 775 {} \;
+    find storage bootstrap/cache -type f -exec chmod 664 {} \;
+}
+
+# storage/ is a named volume carried across deploys; a fresh volume only has what
+# the image seeded, so make sure every expected sub-directory exists.
+step "preparing storage directories"
+mkdir -p \
+    storage/app/public \
+    storage/logs \
+    storage/framework/cache \
+    storage/framework/sessions \
+    storage/framework/views
+
+step "fixing permissions on storage and bootstrap/cache"
+fix_laravel_permissions
+
+# ── OPTIONAL: credential file placed by ops on the storage volume ─────────────
+# Pattern for any secret a package reads by PATH (service account JSON, licence
+# key, client certificate): it is NOT baked into the image, so warn loudly rather
+# than failing the whole deploy. Uncomment and rename, or delete if unused.
+# CRED_PATH="${SERVICE_ACCOUNT_FILE:-storage/app/service-account.json}"
+# if [ ! -f "$CRED_PATH" ]; then
+#     echo "WARNING: credential file not found at ${CRED_PATH}." >&2
+#     echo "         Features reading it will fail until it is placed on the storage volume." >&2
+# fi
+
+# ── Wait for the external dependencies on the shared network ──────────────────
+# The database and cache are separate containers with no compose dependency edge,
+# so they can be mid-restart when this container boots. Probing them here means a
+# dependency that is merely slow produces a wait message instead of a crash, and
+# a dependency that is genuinely misconfigured says so by name.
+wait_for_tcp() {
+    label="$1"; host="$2"; port="$3"
+    step "waiting for ${label} at ${host}:${port}"
+    i=0
+    while [ "$i" -lt 60 ]; do
+        if php -r 'exit(@fsockopen($argv[1], (int) $argv[2], $e, $s, 2) ? 0 : 1);' "$host" "$port"; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 2
+    done
+    fail "${label} unreachable at ${host}:${port} after 120s"
+}
+
+# Both probes are skipped when the variable is unset, so an app on sqlite or
+# without redis boots without editing this file. Set DB_HOST/DB_PORT and
+# REDIS_HOST/REDIS_PORT in the deploy environment to enable them.
+if [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ]; then
+    wait_for_tcp database "${DB_HOST}" "${DB_PORT}"
+fi
+
+if [ -n "${REDIS_HOST:-}" ]; then
+    wait_for_tcp redis "${REDIS_HOST}" "${REDIS_PORT:-6379}"
+
+    # Redis reachable at the TCP level says nothing about AUTH. A wrong password,
+    # or a password sent to a server without `requirepass`, makes every cache and
+    # queue call throw much later. Checked here with a raw RESP AUTH+PING: no
+    # vendor autoload and no tinker, so it works whatever composer shipped.
+    step "checking redis authentication"
+    php -r '
+    $host = $argv[1]; $port = (int) $argv[2]; $pass = $argv[3];
+    $fp = @fsockopen($host, $port, $e, $s, 5);
+    if (! $fp) { fwrite(STDERR, "cannot connect: $s\n"); exit(1); }
+    $send = function ($parts) use ($fp) {
+        $out = "*" . count($parts) . "\r\n";
+        foreach ($parts as $p) { $out .= "$" . strlen($p) . "\r\n" . $p . "\r\n"; }
+        fwrite($fp, $out);
+        return fgets($fp);
+    };
+    if ($pass !== "") {
+        $reply = $send(["AUTH", $pass]);
+        if (strpos($reply, "+OK") !== 0) { fwrite(STDERR, "AUTH refused: " . trim($reply) . "\n"); exit(1); }
+    }
+    $reply = $send(["PING"]);
+    if (strpos($reply, "+PONG") !== 0) { fwrite(STDERR, "PING refused: " . trim($reply) . "\n"); exit(1); }
+    ' "${REDIS_HOST}" "${REDIS_PORT:-6379}" "${REDIS_PASSWORD:-}" \
+        || fail "redis rejected the connection. If AUTH was refused with 'ERR Client sent AUTH, but no password is set', clear REDIS_PASSWORD; otherwise it does not match the redis container's requirepass."
+fi
+
+# Drop caches left by the previous image before rebuilding them for this one.
+# Tolerant: on a fresh volume there is nothing to clear, and a clear failure must
+# not stop the boot when the rebuild below is what actually matters.
+step "clearing stale caches"
+run_as_www_data "php artisan optimize:clear --no-interaction" || true
+
+step "linking storage"
+run_as_www_data "php artisan storage:link --force --no-interaction" \
+    || fail "storage:link"
+
+step "caching config"
+run_as_www_data "php artisan config:cache --no-interaction" \
+    || fail "config:cache (check the deploy .env - a malformed value breaks this first)"
+
+# ── Publish public/ into the shared volume nginx serves from ───────────────────
+# Done on every start so a freshly deployed image replaces stale assets.
+step "publishing public/ into the shared volume"
+if [ -d /srv/public ]; then
+    rm -rf /srv/public/* /srv/public/.[!.]* 2>/dev/null || true
+    cp -a public/. /srv/public/
+    chown -R www-data:www-data /srv/public
+fi
+
+# --isolated: atomic lock via the cache store, so migrations run exactly once
+# even if this service is ever scaled. Retried because the database may start
+# accepting connections late after a host reboot.
+step "running migrations"
+attempts=0
+max_attempts=30
+
+until run_as_www_data "php artisan migrate --force --isolated --no-interaction"; do
+    attempts=$((attempts + 1))
+
+    if [ "$attempts" -ge "$max_attempts" ]; then
+        fail "migrations did not succeed after ${max_attempts} attempts"
+    fi
+
+    echo "[entrypoint] migrate attempt ${attempts} failed, retrying in 2s" >&2
+    sleep 2
+done
+
+step "caching routes, views and events"
+run_as_www_data "php artisan route:cache --no-interaction" || fail "route:cache"
+run_as_www_data "php artisan view:cache --no-interaction"  || fail "view:cache"
+run_as_www_data "php artisan event:cache --no-interaction" || fail "event:cache"
+
+fix_laravel_permissions
+
+step "starting php-fpm"
+exec php-fpm

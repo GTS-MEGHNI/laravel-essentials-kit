@@ -1,0 +1,253 @@
+# Production deployment
+
+Four containers on one host: `app` (php-fpm), `nginx`, `queue` (`queue:work`) and
+`scheduler` (`schedule:work`). The app, queue and scheduler run the same image and
+differ only in the entrypoint compose gives them. The database and cache live in
+their own containers, already running on a shared docker network.
+
+```
+Internet
+  └─ host nginx (TLS, /etc/nginx/conf.d/<domain>.conf)   ← vps-nginx/
+       └─ 127.0.0.1:3000
+            └─ nginx container (:80)                     ← nginx/default.conf
+                 └─ fastcgi app:9000
+                      └─ app container (php-fpm)         ← entrypoint/app-entrypoint.sh
+                            queue container              ← entrypoint/queue-entrypoint.sh
+                            scheduler container          ← entrypoint/scheduler-entrypoint.sh
+                                 ↳ external services: database, cache/queue, ...
+```
+
+Every file here ships with `myapp` and `example.com` placeholders. Replace them
+before the first deploy.
+
+## Files
+
+| Path | Purpose |
+|---|---|
+| `Dockerfile` | Multi-stage build; `quality` stage runs Pint, `app` stage is last and ships as `:latest`. |
+| `docker-compose.yml` | The four services, healthchecks, resource caps, log rotation, external network and volume. |
+| `entrypoint/app-entrypoint.sh` | Dependency waits, migrations, cache warmup, `public/` publish, then `exec php-fpm`. |
+| `entrypoint/queue-entrypoint.sh` | Cache priming, then `exec queue:work` as `www-data`. |
+| `entrypoint/scheduler-entrypoint.sh` | Cache priming, then `exec schedule:work`. |
+| `php/php-fpm.conf` | Pool sizing, slowlog, `ping.path`. Mounted as `zzz-custom.conf` so it beats `www.conf`. |
+| `php/opcache.ini` | Production opcache, including `validate_timestamps=0`. |
+| `php/php.ini` | Limits, timeouts, upload sizes. |
+| `nginx/default.conf` | Container nginx: fastcgi to `app:9000`, dotfile denies. |
+| `vps-nginx/site.conf.example` | Host nginx: TLS, proxy to `127.0.0.1:3000`, upstream keepalive, maintenance page. |
+| `vps-nginx/maintenance.html` | Static page the host nginx serves while the app container is being replaced. |
+
+No CI pipeline is included. Whatever builds the image has to produce the
+environment file described below.
+
+## First deploy
+
+1. On the host, create the shared network and the storage volume:
+
+   ```bash
+   docker network create global_network        # skip if it already exists
+   docker volume create myapp_storage         # or reuse an existing volume name
+   ```
+
+2. Replace `example.com` and `myapp` in `vps-nginx/site.conf.example`, install it
+   as `/etc/nginx/conf.d/<domain>.conf`, and install the maintenance page:
+
+   ```bash
+   sudo install -D -m 644 vps-nginx/maintenance.html /var/www/maintenance/maintenance.html
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+   TLS comes from certbot or an existing certificate.
+
+3. Confirm `bootstrap/app.php` trusts the proxy. Without it every generated URL is
+   `http://` and every client looks like the proxy:
+
+   ```php
+   ->withMiddleware(function (Middleware $middleware) {
+       $middleware->trustProxies(at: '*');
+   })
+   ```
+
+   `at: '*'` is correct here, and only because the container port is published on
+   `127.0.0.1`: nothing but the host nginx can reach it, so no untrusted client
+   can forge the headers. Do not narrow it to the docker subnet — the container
+   nginx rewrites `REMOTE_ADDR` to the real client with `real_ip_header`, so a
+   subnet allow-list would match nothing and the headers would be dropped again.
+
+4. Set `pm.max_children` in `php/php-fpm.conf` and the memory limits together, from
+   real host numbers. See [Sizing](#sizing).
+
+5. Audit the route cache locally. `route:cache` also runs in the entrypoint, so
+   anything it rejects kills the new container after the old one has stopped:
+
+   ```bash
+   php artisan route:cache && php artisan route:clear
+   ```
+
+6. Write the deploy `.env` (see [Environment](#environment)), then:
+
+   ```bash
+   docker build -f docker/production/Dockerfile -t myapp:latest .
+   docker compose -f docker/production/docker-compose.yml --env-file .env up -d
+   ```
+
+   Deploy with `up -d`, never `down`: compose then recreates only the services
+   whose image changed, and the queue worker gets its `stop_grace_period` to
+   finish the job in flight.
+
+## Environment
+
+`docker-compose.yml` reads its own variables from the file passed as
+`--env-file`, and passes that same file to the containers as `env_file`, so one
+file carries both groups.
+
+Application keys, on top of the usual Laravel ones:
+
+| Key | Why |
+|---|---|
+| `APP_ENV=production`, `APP_DEBUG=false` | `config:cache` bakes these in. |
+| `APP_KEY` | Must be a real key, bound from a secret store, never committed. |
+| `DB_HOST`, `DB_PORT` | Container name and port of the database. The entrypoint waits for them, and skips the wait when unset. |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` | Same, plus an `AUTH`/`PING` probe. Leave `REDIS_HOST` unset if the app has no redis. |
+| `LOG_CHANNEL=stderr` | Routes logs to `docker logs`, where compose rotates them. A file channel writes onto the storage volume instead. |
+| `SESSION_DRIVER=database` | Survives container replacement, unlike `file`. Needs the `sessions` table. |
+| `QUEUE_CONNECTION` | Whatever the queue worker should read. |
+
+Compose keys, all optional with defaults in the compose file:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `COMPOSE_PROJECT` | `myapp-production` | Compose project name. |
+| `IMAGE_NAME` | `myapp` | Image the three roles run, `:latest` tag. |
+| `CONTAINER_PREFIX` | `myapp` | Container name prefix. |
+| `APP_ENV_FILE` | `../../.env` | Env file, relative to `docker/production/`. |
+| `HOST_IP` | `127.0.0.1` | Publish address. See the warning below. |
+| `HOST_PORT` | `3000` | Loopback port the host nginx proxies to. |
+| `NETWORK_NAME` | `global_network` | Existing external network. |
+| `STORAGE_VOLUME` | `myapp_storage` | Existing external volume for `storage/`. |
+| `APP_MEM_LIMIT`, `APP_MEM_RESERVATION`, `APP_CPUS` | `1500m`, `768m`, `1.5` | app caps. |
+| `QUEUE_MEM_LIMIT`, `QUEUE_MEM_RESERVATION`, `QUEUE_CPUS` | `768m`, `256m`, `1.0` | queue caps. |
+| `SCHEDULER_MEM_LIMIT`, `SCHEDULER_MEM_RESERVATION`, `SCHEDULER_CPUS` | `256m`, `128m`, `0.5` | scheduler caps. |
+| `NGINX_MEM_LIMIT`, `NGINX_MEM_RESERVATION`, `NGINX_CPUS` | `128m`, `64m`, `0.5` | nginx caps. |
+| `QUEUE_NAMES`, `QUEUE_TRIES`, `QUEUE_BACKOFF`, `QUEUE_TIMEOUT`, `QUEUE_SLEEP`, `QUEUE_MAX_JOBS`, `QUEUE_MAX_TIME`, `QUEUE_WORKER_MEMORY` | `default`, `3`, `10`, `60`, `3`, `500`, `3600`, `192` | `queue:work` flags. |
+
+Two rules that bite:
+
+- **`config:cache` breaks `env()` outside `config/`.** Once the config cache
+  exists the framework never reads `.env` again, so `env('FOO')` in a controller,
+  job or view returns `null` with no error. It cannot reproduce locally, because
+  local development does not cache config. Use `env()` only inside `config/`, and
+  `config('services.foo.key')` everywhere else.
+- **UFW does not filter published container ports.** Docker writes a DNAT rule
+  into the nat table's `DOCKER` chain, traversed before UFW's filter rules, so a
+  container published on `0.0.0.0` is reachable from the internet even with
+  `ufw deny` on that port. Setting `HOST_IP=0.0.0.0` publishes this stack to the
+  internet and no UFW rule can take it back.
+
+## Sizing
+
+`APP_MEM_LIMIT` and `pm.max_children` move together:
+
+```
+max_children x 48MB + 128MB  <=  APP_MEM_LIMIT
+```
+
+Raising `max_children` alone converts a slow request into an OOM kill. Derive the
+stack budget by paying the other tenants first, then split it app 57%, queue 29%,
+scheduler 10%, nginx 4%:
+
+```
+stack budget = host RAM - database - cache - (OS + docker + CI reserve)
+```
+
+| Host RAM | DB + cache | OS reserve | Stack budget | app | queue | scheduler | nginx | max_children |
+|---|---|---|---|---|---|---|---|---|
+| 2 GB | 512m + 256m | 400m | ~850m | 512m | 256m | 128m | 96m | 8 |
+| 4 GB | 768m + 384m | 600m | ~2.4g | **1500m** | **768m** | **256m** | **128m** | **24** |
+| 8 GB | 2g + 512m | 800m | ~4.6g | 2800m | 1200m | 384m | 256m | 44 |
+| 16 GB | 4g + 1g | 1g | ~10g | 6g | 2500m | 512m | 256m | 90 |
+
+The bold row is what ships here. External service sizes are examples; use the real
+ones, and re-derive after anything else lands on the host.
+
+Then check the pool against the database. Laravel opens one connection per request
+in flight, and postgres allows 97 by default:
+
+```
+max_children + queue containers + 5  <=  max_connections - 3
+```
+
+If it does not fit, lower `max_children`. Exceeding it fails as
+`SQLSTATE[08006] FATAL: sorry, too many clients already` on some requests only.
+
+## Timeout ladder
+
+Keep this order, so nginx returns the 504 before php-fpm kills the worker:
+
+```
+nginx (container) fastcgi_read_timeout      60s
+php.ini           max_execution_time        60
+host nginx        proxy_read_timeout        65s
+php-fpm           request_terminate_timeout 75s
+```
+
+## Deploy window
+
+`docker compose up -d` stops the old app container and starts the new one.
+Requests fail from that stop until php-fpm listens again, which is after the whole
+entrypoint: dependency waits, `optimize:clear`, `storage:link`, `config:cache`,
+publishing `public/`, migrations, then the route, view and event caches. Expect
+15-45s, dominated by migrations.
+
+nginx is not recreated, so it answers `fastcgi_pass app:9000` with 502 for that
+whole window. The host nginx maps 502, 503 and 504 onto the static maintenance
+page, which is why that page belongs to the host layer and not to the app.
+
+Genuine zero-downtime needs two app containers and an upstream swap. This layout
+trades that for a bounded, honest window.
+
+## Verification
+
+```bash
+# 1. containers
+docker ps -a --filter name=myapp --format 'table {{.Names}}\t{{.Status}}'
+
+# 2. clean boot — expect every [entrypoint] step, ending at "starting php-fpm"
+docker logs --tail=40 myapp_app
+
+# 3. HTTP, both layers
+curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' http://127.0.0.1:3000/api/health
+curl -s -w '\n' https://example.com/api/health
+
+# 4. caches baked, debug off, no stale drivers
+docker exec myapp_app php artisan about --only=environment,cache,drivers
+
+# 5. queue and scheduler
+docker logs --tail=15 myapp_queue
+docker logs --tail=15 myapp_scheduler
+
+# 6. capacity against pm.max_children, and nothing at its memory ceiling
+nproc; free -m
+docker exec myapp_app sh -c 'ps -o rss= -C php-fpm | sort -n | tail -1'
+docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.CPUPerc}}'
+docker inspect -f '{{.Name}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' \
+    myapp_app myapp_queue myapp_scheduler myapp_nginx
+
+# 7. nothing exposed past loopback except the host nginx (:22, :80, :443 only)
+ss -ltnp | grep -vE '127\.0\.0\.1|\[::1\]'
+
+# 8. proxy headers: absolute URLs must be https, and logs must show real client IPs
+docker logs --tail=3 myapp_nginx
+```
+
+Read the results carefully:
+
+- `docker logs myapp_app | grep 'reached pm.max_children'` means the pool starved.
+  Raise `max_children` and `APP_MEM_LIMIT` together, then re-check the connection
+  ceiling.
+- `MemPerc` steady above roughly 85% on any service is the next OOM kill, not
+  headroom.
+- On redis, `maxmemory-policy` must be `noeviction` or `volatile-*`. Any
+  `allkeys-*` policy silently evicts queued jobs, because Laravel's redis queue
+  keys have no TTL.
+- A healthy `/api/health` is not proof the app works, only that it responds.
+  Exercise one real authenticated flow before calling a deploy verified.
