@@ -1,6 +1,14 @@
 # Release Notes
 
-## [Unreleased](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.1.0...HEAD)
+## [Unreleased](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.2.0...HEAD)
+
+## [v1.2.0](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.1.0...v1.2.0) - 2026-10-15
+
+### Added
+
+- Optional `names` feature generating `database/factories/Faker/AlgerianPerson.php`, a Faker provider with `algerianFirstName()`, `algerianLastName()`, `algerianName()`, and `algerianMobile()`. First names are split into male and female lists using Faker's `'male'` and `'female'` values, surnames are shared, and any other gender throws. Names use the Latin transliteration found on Algerian identity documents and mix Arabic and Amazigh names. Surnames carried by heads of state, ministers, and other well known political figures are left out.
+- The generated provider registers it on every Faker instance the container resolves, so `fake()`, `$this->faker`, and factories all get the formatters. The registration is skipped when Faker is not installed, so production builds made with `--no-dev` still boot.
+- The installer rewrites `'name' => fake()->name()` in `database/factories/UserFactory.php` to `fake()->algerianName()`, and warns instead of guessing when the factory no longer has that line.
 
 ## [v1.1.0](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.0.1...v1.1.0) - 2026-10-05
 
