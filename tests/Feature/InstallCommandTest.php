@@ -233,6 +233,7 @@ it('generates every stub as syntactically valid php', function (): void {
         '/database/migrations/0001_01_01_000010_create_provinces_table.php',
         '/database/migrations/0001_01_01_000011_create_communes_table.php',
         '/database/seeders/AlgeriaGeoSeeder.php',
+        '/database/factories/Faker/AlgerianPerson.php',
     ];
 
     foreach ($paths as $path) {
@@ -250,7 +251,8 @@ it('checks every generated file against pint', function (): void {
             .escapeshellarg($this->appPath.'/app').' '
             .escapeshellarg($this->appPath.'/config').' '
             .escapeshellarg($this->appPath.'/database/migrations').' '
-            .escapeshellarg($this->appPath.'/database/seeders').' 2>&1',
+            .escapeshellarg($this->appPath.'/database/seeders').' '
+            .escapeshellarg($this->appPath.'/database/factories').' 2>&1',
         $output,
         $status,
     );
@@ -272,8 +274,10 @@ it('analyses every generated file at the level it installs', function (): void {
         level: max
         paths:
             - {$this->appPath}/app
+            - {$this->appPath}/database/factories
         scanDirectories:
             - {$this->appPath}/app
+            - {$this->appPath}/database/factories
         treatPhpDocTypesAsCertain: false
         tmpDir: {$this->appPath}/build/phpstan
     NEON);

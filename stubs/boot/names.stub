@@ -1,0 +1,16 @@
+    /**
+     * Teach Faker the Algerian names used by factories and seeders.
+     *
+     * Faker is a development dependency, so an install built without it skips
+     * this instead of failing to boot.
+     */
+    private function bootNames(): void
+    {
+        if (! class_exists(Generator::class)) {
+            return;
+        }
+
+        $this->app->afterResolving(Generator::class, static function (Generator $faker): void {
+            $faker->addProvider(new AlgerianPerson($faker));
+        });
+    }

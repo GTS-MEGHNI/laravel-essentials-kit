@@ -217,6 +217,42 @@ $province->communes;
 
 Provinces are keyed by their zero padded wilaya code. Codes `01` to `58` are the wilayas proper; `59` to `69` are the delegated administrative districts created in 2019, whose communes are also listed under their parent wilaya. Communes keep the id carried by the dataset instead of an autoincrement, so rows referencing them survive a fresh install.
 
+### Algerian names for seeding
+
+An optional feature that makes seeded users look like real Algerian users instead of Faker's generic English names. It writes one file:
+
+```
+database/factories/Faker/AlgerianPerson.php
+```
+
+The file holds the name lists, so you can edit them. Names use the Latin transliteration found on Algerian identity documents and mix Arabic and Amazigh names. The generated provider registers it on every Faker instance the container resolves, so `fake()`, `$this->faker`, and factories all get the new formatters:
+
+```php
+fake()->algerianName();               // "Yasmine Benali"
+fake()->algerianName('male');         // "Lounès Mokrani"
+fake()->algerianFirstName('female');  // "Meriem"
+fake()->algerianLastName();           // "Ait Ahmed"
+fake()->algerianMobile();             // "0661234567", accepted by AlgerianPhoneNumber
+fake()->unique()->algerianName();
+```
+
+First names are split by gender, using the same `'male'` and `'female'` values as Faker's own `firstName()`. With no gender, one is picked at random. Surnames are shared, because Algerian surnames do not change with gender. Any other gender value throws `InvalidArgumentException`.
+
+The installer also rewrites `'name' => fake()->name()` in `database/factories/UserFactory.php` to `fake()->algerianName()`. If the factory has been changed and no longer has that line, the installer prints a warning and leaves the file alone.
+
+The default `users` table has no gender column. If yours has one, pick the gender once so the name matches it:
+
+```php
+$gender = fake()->randomElement(['male', 'female']);
+
+return [
+    'gender' => $gender,
+    'name' => fake()->algerianName($gender),
+];
+```
+
+Faker is a development dependency, so the provider skips the registration when Faker is not installed. Production builds made with `composer install --no-dev` still boot.
+
 ### Packages
 
 The installer offers to install and set up the packages an API project usually needs:

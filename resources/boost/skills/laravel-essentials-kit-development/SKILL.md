@@ -46,7 +46,7 @@ If the relevant file exists, edit it. Do not re-run the installer to change beha
 php artisan essentials:install --features=api --no-interaction
 ```
 
-Features: `database`, `models`, `dates`, `security`, `observability`, `api`, `route-groups`, `health`, `otp`, `phone`, `geo`.
+Features: `database`, `models`, `dates`, `security`, `observability`, `api`, `route-groups`, `health`, `otp`, `phone`, `geo`, `names`.
 
 Pass `--no-interaction` in any scripted context. Without explicit flags a non-interactive run does nothing at all, which is intended. Other steps are flags, not features: `--packages=*`, `--redis=`, `--redis-cache`, `--timezone`, `--tooling`, `--docker`, `--cleanup`.
 
@@ -99,6 +99,17 @@ $commune->translatedName();                       // current locale, falling bac
 Names live in a `name` JSON column cast to an array, keyed `ar`, `fr`, `en`. Query a locale with `where('name->fr', ...)`. Sorting a full commune list by localized name has no index behind it, so paginate or filter by province first.
 
 Re-seed with `php artisan db:seed --class=AlgeriaGeoSeeder`, which updates in place rather than duplicating.
+
+When `database/factories/Faker/AlgerianPerson.php` exists, seed people with its formatters, not with Faker's `name()` or `firstName()`:
+
+```php
+fake()->algerianName();               // random gender
+fake()->algerianName('female');       // 'male' or 'female', anything else throws
+fake()->algerianLastName();           // surnames are shared across genders
+fake()->algerianMobile();             // passes AlgerianPhoneNumber
+```
+
+When a model stores gender, pick it once and pass it to `algerianName($gender)` so the name matches the column. Add names by editing the lists in `AlgerianPerson`, not by adding a second provider.
 
 ### 6. Keep Telescope out of production
 

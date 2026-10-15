@@ -1,0 +1,123 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Database\Factories\Faker;
+
+use Faker\Provider\Base;
+use InvalidArgumentException;
+
+/**
+ * Algerian first names, surnames, and mobile numbers for factories and seeders.
+ *
+ * Names use the Latin transliteration found on Algerian identity documents and
+ * mix Arabic and Amazigh names. Surnames do not change with gender, so only
+ * first names are split. Surnames carried by heads of state, ministers, and
+ * other well known political figures are left out, so seeded users are not
+ * mistaken for real public people. Edit the lists freely, they are yours.
+ */
+final class AlgerianPerson extends Base
+{
+    /**
+     * @var list<string>
+     */
+    private const array MALE = [
+        'Abdelaziz', 'Abdelghani', 'Abdelhamid', 'Abdelkader', 'Abdellah', 'Abdelmalek', 'Abdenour',
+        'Abderrahmane', 'Adel', 'Adlane', 'Ahmed', 'Akram', 'Ali', 'Amine', 'Amir', 'Anis', 'Ayoub',
+        'Aymen', 'Azzedine', 'Bachir', 'Badis', 'Belkacem', 'Bilal', 'Boualem', 'Brahim', 'Chakib',
+        'Chemseddine', 'Cherif', 'Djamel', 'Djillali', 'Fares', 'Farid', 'Fateh', 'Fayçal', 'Fethi',
+        'Hakim', 'Halim', 'Hamza', 'Haroun', 'Hichem', 'Hocine', 'Houari', 'Ibrahim', 'Idir', 'Ilyes',
+        'Islam', 'Ismail', 'Kamel', 'Karim', 'Khaled', 'Khalil', 'Lakhdar', 'Larbi', 'Lotfi', 'Lounès',
+        'Lyes', 'Madjid', 'Mahdi', 'Malek', 'Mansour', 'Massinissa', 'Mehdi', 'Merouane', 'Messaoud',
+        'Mohamed', 'Mohamed Amine', 'Mokhtar', 'Mourad', 'Moussa', 'Mustapha', 'Nabil', 'Nacer', 'Nadir',
+        'Nassim', 'Nazim', 'Nour', 'Noureddine', 'Omar', 'Oussama', 'Rachid', 'Rafik', 'Ramzi', 'Raouf',
+        'Redouane', 'Riad', 'Sabri', 'Salah', 'Salim', 'Samir', 'Seddik', 'Sid Ahmed', 'Slimane', 'Smail',
+        'Sofiane', 'Tahar', 'Takfarinas', 'Tarek', 'Toufik', 'Walid', 'Wassim', 'Wissem', 'Yacine',
+        'Yanis', 'Youcef', 'Younes', 'Zakaria', 'Zinedine', 'Zoheir',
+    ];
+
+    /**
+     * @var list<string>
+     */
+    private const array FEMALE = [
+        'Aicha', 'Amel', 'Amina', 'Anissa', 'Asma', 'Assia', 'Baya', 'Chahinez', 'Chaima', 'Dalila',
+        'Djamila', 'Djazia', 'Djouher', 'Dounia', 'Fadila', 'Farida', 'Fatiha', 'Fatima', 'Fella',
+        'Feriel', 'Ghania', 'Hadjer', 'Hafsa', 'Hanane', 'Hassina', 'Hayet', 'Houria', 'Ikram', 'Imane',
+        'Ines', 'Kahina', 'Karima', 'Katia', 'Kenza', 'Khadidja', 'Kheira', 'Lamia', 'Leila', 'Lilia',
+        'Lina', 'Louisa', 'Lydia', 'Lynda', 'Malak', 'Malika', 'Manel', 'Maroua', 'Melissa', 'Meriem',
+        'Mounia', 'Nadia', 'Naima', 'Nassima', 'Nawel', 'Nesrine', 'Nihad', 'Nora', 'Nouha', 'Nour',
+        'Ouarda', 'Rachida', 'Radia', 'Rania', 'Razika', 'Rokia', 'Romaissa', 'Rym', 'Sabrina', 'Safia',
+        'Saida', 'Saliha', 'Salima', 'Samia', 'Sara', 'Selma', 'Sihem', 'Sonia', 'Souad', 'Soumia',
+        'Thanina', 'Thiziri', 'Tinhinane', 'Wafa', 'Wahiba', 'Warda', 'Yamina', 'Yasmine', 'Yousra',
+        'Zahia', 'Zahra', 'Zineb', 'Zohra',
+    ];
+
+    /**
+     * @var list<string>
+     */
+    private const array LAST = [
+        'Abdelli', 'Achour', 'Aissaoui', 'Ait Ali', 'Ait Said', 'Allouache', 'Amara', 'Amrani',
+        'Amrouche', 'Arab', 'Azzouz', 'Belarbi', 'Belkacemi', 'Belkadi', 'Bellal', 'Bellil',
+        'Benabdallah', 'Benaissa', 'Benali', 'Benamar', 'Benaouda', 'Bencheikh', 'Bendaoud', 'Benhamou',
+        'Benmansour', 'Benmoussa', 'Bensaid', 'Bentaleb', 'Benyoucef', 'Berkani', 'Bouabdallah',
+        'Bouaziz', 'Boucetta', 'Bouchakour', 'Boudjemaa', 'Boukhalfa', 'Boukhari', 'Bounab', 'Bourahla',
+        'Bouras', 'Boussaid', 'Bouzid', 'Chabane', 'Chaouch', 'Chentouf', 'Cherif', 'Cherifi',
+        'Dahmani', 'Daoud', 'Derradji', 'Djebbar', 'Djellouli', 'Draoui', 'Fergani', 'Gacem', 'Ghezali',
+        'Guendouz', 'Guerfi', 'Haddad', 'Hadj Ali', 'Hadjadj', 'Hamdi', 'Hamidi', 'Hamoudi', 'Harbi',
+        'Hocini', 'Kaci', 'Kaddour', 'Kadri', 'Kebaili', 'Khaldi', 'Khelifi', 'Kherbache', 'Laib',
+        'Lakhdari', 'Larbi', 'Lounici', 'Mahmoudi', 'Makhlouf', 'Mammeri', 'Mansouri', 'Mebarki',
+        'Medjahed', 'Mekki', 'Merabet', 'Meziane', 'Moussaoui', 'Nait Ali', 'Nedjar', 'Ouali',
+        'Ouchene', 'Oukaci', 'Rahmani', 'Rezki', 'Saadi', 'Sahraoui', 'Saidi', 'Salhi', 'Seghir',
+        'Slimani', 'Smail', 'Taleb', 'Touati', 'Yahiaoui', 'Yousfi', 'Zerrouki', 'Ziani', 'Zouaoui',
+    ];
+
+    /**
+     * A first name, of the given gender or a random one.
+     *
+     * @param  'male'|'female'|null  $gender
+     */
+    public function algerianFirstName(?string $gender = null): string
+    {
+        return self::pick(match ($gender ?? (self::numberBetween(0, 1) === 0 ? 'male' : 'female')) {
+            'male' => self::MALE,
+            'female' => self::FEMALE,
+            default => throw new InvalidArgumentException('The gender must be "male", "female", or null.'),
+        });
+    }
+
+    /**
+     * A surname, which is the same for every gender.
+     */
+    public function algerianLastName(): string
+    {
+        return self::pick(self::LAST);
+    }
+
+    /**
+     * A first name followed by a surname.
+     *
+     * @param  'male'|'female'|null  $gender
+     */
+    public function algerianName(?string $gender = null): string
+    {
+        return $this->algerianFirstName($gender).' '.$this->algerianLastName();
+    }
+
+    /**
+     * A local mobile number accepted by the AlgerianPhoneNumber rule.
+     */
+    public function algerianMobile(): string
+    {
+        return '0'.self::numberBetween(5, 7).self::numerify('########');
+    }
+
+    /**
+     * Pick one entry through Faker's seeded randomness.
+     *
+     * @param  list<string>  $names
+     */
+    private static function pick(array $names): string
+    {
+        return $names[self::numberBetween(0, count($names) - 1)];
+    }
+}

@@ -15,6 +15,7 @@ final class Feature
      * @param  bool  $patchesBootstrap  Whether this feature wires itself into bootstrap/app.php.
      * @param  string|null  $routeStub  Route stub appended to routes/api.php.
      * @param  string|null  $routeMarker  Text proving the stub was already appended.
+     * @param  bool  $patchesUserFactory  Whether this feature rewrites database/factories/UserFactory.php.
      */
     public function __construct(
         public readonly string $key,
@@ -27,6 +28,7 @@ final class Feature
         public readonly bool $patchesBootstrap = false,
         public readonly ?string $routeStub = null,
         public readonly ?string $routeMarker = null,
+        public readonly bool $patchesUserFactory = false,
     ) {}
 
     /**
@@ -190,6 +192,19 @@ final class Feature
                     'geo/AlgeriaGeoSeeder.php.stub' => 'database/seeders/AlgeriaGeoSeeder.php',
                 ],
                 bootsProvider: false,
+            ),
+            new self(
+                key: 'names',
+                label: 'Algerian names for seeding',
+                description: 'Faker formatters for Algerian first names, surnames, and mobile numbers, used by the UserFactory.',
+                imports: [
+                    'Database\Factories\Faker\AlgerianPerson',
+                    'Faker\Generator',
+                ],
+                files: [
+                    'names/AlgerianPerson.php.stub' => 'database/factories/Faker/AlgerianPerson.php',
+                ],
+                patchesUserFactory: true,
             ),
         ];
     }

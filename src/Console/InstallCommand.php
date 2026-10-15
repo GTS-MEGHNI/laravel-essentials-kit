@@ -18,6 +18,7 @@ use GtsMeghni\EssentialsKit\Installers\RouteAppender;
 use GtsMeghni\EssentialsKit\Installers\TelescopeGuard;
 use GtsMeghni\EssentialsKit\Installers\TimezonePatcher;
 use GtsMeghni\EssentialsKit\Installers\Tooling;
+use GtsMeghni\EssentialsKit\Installers\UserFactoryPatcher;
 use GtsMeghni\EssentialsKit\Installers\UserModelPatcher;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Process\ProcessResult;
@@ -254,6 +255,7 @@ final class InstallCommand extends Command
         $this->registerProvider($files);
         $this->patchBootstrap($files, $features);
         $this->appendRoutes($files, $features);
+        $this->patchUserFactory($files, $features);
 
         return self::SUCCESS;
     }
@@ -283,6 +285,33 @@ final class InstallCommand extends Command
         }
 
         $this->components->warn($failure.' Register the API middleware and ApiExceptionRenderer there manually.');
+    }
+
+    /**
+     * Point the user factory at the Algerian names the selected features add.
+     *
+     * @param  list<Feature>  $features
+     */
+    private function patchUserFactory(Filesystem $files, array $features): void
+    {
+        $patching = array_filter(
+            $features,
+            static fn (Feature $feature): bool => $feature->patchesUserFactory,
+        );
+
+        if ($patching === []) {
+            return;
+        }
+
+        $failure = (new UserFactoryPatcher($files, $this->laravel->basePath()))->patch();
+
+        if ($failure === null) {
+            $this->components->info('Seeded Algerian names from database/factories/UserFactory.php');
+
+            return;
+        }
+
+        $this->components->warn($failure.' Use fake()->algerianName() for the name attribute manually.');
     }
 
     /**
