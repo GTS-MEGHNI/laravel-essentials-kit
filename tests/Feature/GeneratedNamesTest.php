@@ -98,12 +98,14 @@ it('registers the formatters on every faker the container resolves', function ()
 
 it('keeps first names apart by gender', function (): void {
     $faker = algerianFaker();
+    $lists = new ReflectionClass(AlgerianPerson::class);
+    $maleOnly = array_diff($lists->getConstant('MALE'), $lists->getConstant('FEMALE'));
+    $femaleOnly = array_diff($lists->getConstant('FEMALE'), $lists->getConstant('MALE'));
 
-    $male = array_map(fn (): string => $faker->algerianFirstName('male'), range(1, 200));
-    $female = array_map(fn (): string => $faker->algerianFirstName('female'), range(1, 200));
-
-    expect($male)->toContain('Mohamed')->not->toContain('Meriem')
-        ->and($female)->toContain('Meriem')->not->toContain('Mohamed');
+    foreach (range(1, 200) as $ignored) {
+        expect($faker->algerianFirstName('male'))->not->toBeIn($femaleOnly)
+            ->and($faker->algerianFirstName('female'))->not->toBeIn($maleOnly);
+    }
 });
 
 it('refuses an unknown gender', function (): void {
