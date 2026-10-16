@@ -1314,3 +1314,73 @@ it('writes the redis client to every environment file that exists', function ():
     expect($files->get($this->appPath.'/.env.example'))->toContain('REDIS_CLIENT=phpredis')
         ->and($files->exists($this->appPath.'/.env'))->toBeFalse();
 });
+
+it('sets up reverb without reaching for npm', function (): void {
+    Process::fake();
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--packages' => ['reverb'],
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    Process::assertRan(fn ($process): bool => str_contains($process->command, 'composer require laravel/reverb'));
+    Process::assertRan(fn ($process): bool => str_contains($process->command, 'artisan install:broadcasting --reverb --without-node'));
+    Process::assertRan(fn ($process): bool => str_contains($process->command, 'artisan reverb:install'));
+});
+
+it('points every environment file at reverb', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/.env', "BROADCAST_CONNECTION=reverb\nREVERB_APP_KEY=generated\n");
+    $files->put($this->appPath.'/.env.example', "BROADCAST_CONNECTION=log\n");
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--packages' => ['reverb'],
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    // reverb:install writes the real credentials into .env only, so the
+    // example gets the keys declared and the generated key is left alone.
+    expect($files->get($this->appPath.'/.env.example'))
+        ->toContain('BROADCAST_CONNECTION=reverb')
+        ->toContain('REVERB_APP_KEY=')
+        ->toContain('REVERB_PORT=8080')
+        ->and($files->get($this->appPath.'/.env'))
+        ->toContain('REVERB_APP_KEY=generated');
+});
+
+it('removes the echo client when nothing builds the frontend', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->ensureDirectoryExists($this->appPath.'/resources/js');
+    $files->put($this->appPath.'/resources/js/echo.js', 'import Echo from "laravel-echo";');
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--packages' => ['reverb'],
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    expect($files->exists($this->appPath.'/resources/js'))->toBeFalse();
+});
+
+it('keeps the echo client when the project builds a frontend', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->put($this->appPath.'/package.json', '{}');
+    $files->ensureDirectoryExists($this->appPath.'/resources/js');
+    $files->put($this->appPath.'/resources/js/echo.js', 'import Echo from "laravel-echo";');
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--packages' => ['reverb'],
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    expect($files->exists($this->appPath.'/resources/js/echo.js'))->toBeTrue();
+});

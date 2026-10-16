@@ -6,6 +6,9 @@
 #   • app       -> php-fpm            (requests are served through the nginx container)
 #   • queue     -> queue:work         (one worker process, docker restarts it)
 #   • scheduler -> schedule:work      (Laravel scheduler daemon, sub-minute tasks)
+# @realtime
+#   • reverb    -> reverb:start       (WebSocket server, nginx proxies /app/ and /apps/)
+# @end
 #
 # Build it once, without --target, so the LAST stage ships as ${IMAGE_NAME}:latest
 # and every service in docker/production/docker-compose.yml reuses it. The nginx
@@ -217,6 +220,12 @@ COPY docker/production/entrypoint/scheduler-entrypoint.sh /usr/local/bin/schedul
 RUN chmod +x /usr/local/bin/app-entrypoint \
              /usr/local/bin/queue-entrypoint \
              /usr/local/bin/scheduler-entrypoint
+# @realtime
+
+COPY docker/production/entrypoint/reverb-entrypoint.sh    /usr/local/bin/reverb-entrypoint
+
+RUN chmod +x /usr/local/bin/reverb-entrypoint
+# @end
 
 EXPOSE 9000
 

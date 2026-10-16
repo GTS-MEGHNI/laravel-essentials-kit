@@ -74,6 +74,34 @@ server {
         access_log off;
     }
 
+# @realtime
+    # ── Reverb: WebSocket connections and the Pusher HTTP API ─────────────────
+    # Clients open wss://<host>/app/{key}, and servers publish through the HTTP
+    # API under /apps/{id}/, which rejects any request not signed with
+    # REVERB_APP_SECRET. Both share the API origin, port and certificate. A
+    # regex location, matched in file order, so it sits above the static-asset
+    # regex. A Laravel route under /app/ or /apps/ would be shadowed by this.
+    location ~ ^/(app|apps)/ {
+        proxy_pass http://reverb:8080;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+
+        # Reverb pings an idle client every 60s (REVERB_APP_PING_INTERVAL), so a
+        # read timeout above that keeps quiet connections open.
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_buffering    off;
+
+        access_log off;
+    }
+
+# @end
     # ── Static assets — long cache ────────────────────────────────────────────
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|webp|woff2?|ttf|eot|map)$ {
         expires    1y;
@@ -82,7 +110,7 @@ server {
         try_files  $uri =404;
     }
 
-    # ── Front controller ──────────────────────────────────────────────────────
+   # ── Front controller ──────────────────────────────────────────────────────
     location / {
         try_files $uri $uri/ /index.php?$query_string;
     }

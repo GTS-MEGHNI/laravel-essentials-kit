@@ -1,0 +1,36 @@
+#!/bin/sh
+# reverb role: one `reverb:start` process, the WebSocket server realtime clients
+# connect to. The container nginx proxies /app/ and /apps/ here, so clients reach
+# it on the same origin as the API; nothing publishes its port to the host.
+#
+# Two kinds of traffic arrive on :8080:
+#   /app/{key}   WebSocket connections from clients, through both nginx layers
+#   /apps/{id}/  The signed HTTP API. The app and queue containers call it over
+#                the docker network (REVERB_HOST); other services can reach it
+#                through nginx with the app secret
+#
+# Single instance by default. Running more than one needs REVERB_SCALING_ENABLED
+# and redis, or a client on one instance never sees an event sent to another.
+
+set -e
+umask 0002
+
+cd /var/www/html
+
+log() {
+    echo "[reverb-entrypoint] $*"
+}
+
+run_as_www_data() {
+    su -s /bin/sh www-data -c "$1"
+}
+
+# The app container owns migrations; here we only prime the config cache so the
+# server boots with the same app credentials php-fpm signs broadcasts with.
+log "caching config"
+run_as_www_data "php artisan config:cache --no-interaction"
+
+# 0.0.0.0 so the nginx container can reach it across the docker network. The port
+# is fixed at 8080 because nginx/default.conf and the healthcheck both name it.
+log "starting reverb"
+exec su -s /bin/sh www-data -c "php artisan reverb:start --host=0.0.0.0 --port=8080 --no-interaction"

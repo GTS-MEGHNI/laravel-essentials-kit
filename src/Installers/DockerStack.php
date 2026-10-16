@@ -34,6 +34,15 @@ final class DockerStack
     ];
 
     /**
+     * Files written only when the application broadcasts through Reverb.
+     *
+     * @var array<string, string>
+     */
+    public const array REALTIME_FILES = [
+        'docker/entrypoint/reverb-entrypoint.sh.stub' => 'docker/production/entrypoint/reverb-entrypoint.sh',
+    ];
+
+    /**
      * Destinations that have to keep their executable bit.
      *
      * The Dockerfile chmods them again inside the image, but the entrypoints are
@@ -46,7 +55,18 @@ final class DockerStack
         'docker/production/entrypoint/app-entrypoint.sh',
         'docker/production/entrypoint/queue-entrypoint.sh',
         'docker/production/entrypoint/scheduler-entrypoint.sh',
+        'docker/production/entrypoint/reverb-entrypoint.sh',
     ];
+
+    /**
+     * The markers that fence the Reverb sections of the shared stubs.
+     *
+     * One set of stubs serves both stacks, so a deploy change is made once. A
+     * line holding `@realtime` opens a section kept only with Reverb, and
+     * `@unless-realtime` one kept only without it; `@end` closes either. The
+     * marker lines themselves never reach the application.
+     */
+    private const string SECTION = '/^[^\n]*@(realtime|unless-realtime)\b[^\n]*\n(.*?)^[^\n]*@end\b[^\n]*\n/ms';
 
     public function __construct(
         private readonly Filesystem $files,
@@ -63,12 +83,14 @@ final class DockerStack
      *
      * @return array{created: list<string>, kept: list<string>}
      */
-    public function write(bool $force): array
+    public function write(bool $force, bool $realtime = false): array
     {
         $created = [];
         $kept = [];
 
-        foreach (self::FILES as $stub => $target) {
+        $stubs = $realtime ? [...self::FILES, ...self::REALTIME_FILES] : self::FILES;
+
+        foreach ($stubs as $stub => $target) {
             $path = $this->basePath.'/'.$target;
 
             if ($this->files->exists($path) && ! $force) {
@@ -78,7 +100,7 @@ final class DockerStack
             }
 
             $this->files->ensureDirectoryExists(dirname($path));
-            $this->files->put($path, $this->files->get($this->stubPath.'/'.$stub));
+            $this->files->put($path, $this->render($this->files->get($this->stubPath.'/'.$stub), $realtime));
 
             if (in_array($target, self::EXECUTABLE, true)) {
                 $this->files->chmod($path, 0755);
@@ -88,6 +110,36 @@ final class DockerStack
         }
 
         return ['created' => $created, 'kept' => $kept];
+    }
+
+    /**
+     * Determine whether the application already requires Reverb.
+     */
+    public function requiresReverb(): bool
+    {
+        $path = $this->basePath.'/composer.json';
+
+        if (! $this->files->exists($path)) {
+            return false;
+        }
+
+        $manifest = json_decode($this->files->get($path), true);
+
+        return is_array($manifest)
+            && is_array($manifest['require'] ?? null)
+            && array_key_exists('laravel/reverb', $manifest['require']);
+    }
+
+    /**
+     * Keep the sections that match the stack, and drop the markers.
+     */
+    private function render(string $contents, bool $realtime): string
+    {
+        return (string) preg_replace_callback(
+            self::SECTION,
+            static fn (array $section): string => ($section[1] === 'realtime') === $realtime ? $section[2] : '',
+            $contents,
+        );
     }
 
     /**

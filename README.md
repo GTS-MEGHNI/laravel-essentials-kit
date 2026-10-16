@@ -259,7 +259,7 @@ The installer offers to install and set up the packages an API project usually n
 
 `laravel/sanctum`, `laravel/telescope`, `spatie/laravel-permission`, `spatie/laravel-medialibrary`, `spatie/laravel-activitylog`, `spatie/laravel-query-builder`, `maatwebsite/excel`, `darkaonline/l5-swagger`
 
-Two more are asked as questions rather than listed, because they depend on the project rather than on preference: `gts-meghni/laravel-satim` for SATIM payments, and `gts-meghni/laravel-captcha` for captcha protection.
+Three more are asked as questions rather than listed, because they depend on the project rather than on preference: `laravel/reverb` for realtime broadcasting, `gts-meghni/laravel-satim` for SATIM payments, and `gts-meghni/laravel-captcha` for captcha protection.
 
 Each selected package is required through Composer, then its own publish or install command runs in a fresh process. If Composer fails, the setup commands are skipped and the failure is reported.
 
@@ -284,6 +284,17 @@ if ($this->app->environment('local') && class_exists(\Laravel\Telescope\Telescop
 ```
 
 The `class_exists` check is deliberate belt and braces: an environment misconfigured as `local` in production would otherwise still reach for a class Composer never installed.
+
+### Realtime broadcasting
+
+Answering yes to the realtime question requires `laravel/reverb`, then runs `install:broadcasting --reverb --without-node` followed by `reverb:install`. Reverb is already installed by then, so neither command calls Composer again or stops at the npm prompt. Together they publish `config/broadcasting.php` and `config/reverb.php`, create `routes/channels.php` and register it in `bootstrap/app.php`, and generate the app credentials in `.env`.
+
+Two things the framework commands leave undone are finished by the installer:
+
+- `BROADCAST_CONNECTION=reverb` is set in `.env.example` as well as `.env`, and the `REVERB_*` keys are declared in `.env.example` without values, so a deploy built from the example does not broadcast to the log driver.
+- `install:broadcasting` always writes a Laravel Echo client to `resources/js/echo.js`. When the project has no `package.json`, usually because the API-only cleanup removed it, nothing can build that file, so it is removed. Mobile and SPA clients configure their own Pusher protocol client.
+
+With the production Docker step, Reverb gets its own container. See [Production Docker deployment](#production-docker-deployment).
 
 ### OpenAPI documentation
 
@@ -425,6 +436,14 @@ Files ship with `myapp` and `example.com` placeholders and defaults sized for a 
 - The healthchecks probe `GET /api/health` and assert `"database":"ok"` in the body, because the kit's cleanup step removes the framework's `health: '/up'` route. The installer warns if that route is not registered.
 
 A deploy is `docker compose up -d`, never `down`, so only the services whose image changed are recreated and the queue worker gets its `stop_grace_period` to finish the job in flight. The app container is replaced rather than reloaded, so requests fail for as long as its entrypoint takes, typically 15 to 45 seconds dominated by migrations. `artisan down` cannot cover that window, since maintenance mode is rendered by the PHP that is missing; the host nginx maps upstream 502, 503 and 504 onto a static page instead.
+
+When the project uses Reverb, whether selected in the same run or required by an earlier one, the stack gets a fifth service:
+
+| Service | Role |
+|---|---|
+| `reverb` | Same image, `reverb:start` on `0.0.0.0:8080`. Not published to the host, and healthchecked on Reverb's own `/up` |
+
+Both nginx layers proxy `/app/` and `/apps/` to it with the WebSocket upgrade headers. Clients connect to `wss://example.com/app/{key}` on the API's own origin, port, and certificate, and other services can publish through Reverb's HTTP API under `/apps/`, which rejects any request not signed with the app secret. The app and queue containers skip nginx and publish to `reverb:8080` over the docker network, which is what `REVERB_HOST` points at in the deploy environment. `/broadcasting/auth` remains a Laravel route. Reverb's 256 MB cap comes out of the queue's share, so the queue default drops to 512 MB. A stack without Reverb gets none of this, not even an unused container.
 
 An existing file is never replaced without `--force`, so a config already tuned to its host survives a second install run.
 

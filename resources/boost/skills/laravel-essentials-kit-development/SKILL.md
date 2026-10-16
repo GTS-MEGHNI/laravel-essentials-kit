@@ -36,6 +36,7 @@ Check for generated files before installing anything:
 - `app/Models/Province.php`, `app/Models/Commune.php`: Algerian administrative division, seeded from `database/data/algeria.json`
 - `routes/api/client.php`, `routes/api/backoffice.php`: route groups mounted from `routes/api.php`
 - `app/OpenApi/`: OpenAPI attribute classes, present when `darkaonline/l5-swagger` was installed
+- `config/reverb.php`, `routes/channels.php`: realtime broadcasting, present when `laravel/reverb` was installed
 - `docker/production/`: the production deployment, present when the docker step has run
 
 If the relevant file exists, edit it. Do not re-run the installer to change behavior; re-running requires `--force` and overwrites local edits.
@@ -148,10 +149,17 @@ Four constraints hold across those files:
 
 - `pm.max_children` in `php/php-fpm.conf` and `APP_MEM_LIMIT` in `docker-compose.yml` move together: `max_children x 48MB + 128MB <= APP_MEM_LIMIT`. Raising the pool alone converts a slow request into an OOM kill.
 - The published port stays on `127.0.0.1`. Docker's DNAT rules run before UFW's filter rules, so `HOST_IP=0.0.0.0` exposes the stack to the internet and no firewall rule takes it back.
-- Healthchecks probe `GET /api/health` and assert `"database":"ok"` in the body, never `/up`.
+- Healthchecks probe `GET /api/health` and assert `"database":"ok"` in the body, never Laravel's `/up`. The one exception is the `reverb` service, which probes Reverb's own `/up` on port 8080, served by the WebSocket server rather than the router.
 - Deploy with `docker compose up -d`, never `down`, or the queue worker loses the job in flight and every service is recreated.
 
 `env()` outside `config/` returns `null` in this deployment, because the entrypoint runs `config:cache` and the framework then never reads the environment file again. It cannot reproduce locally. Use `config('services.foo.key')` in application code, and add the `config/` entry in the same commit as a new environment key.
+
+When the app uses Reverb, the stack has a `reverb` service and both nginx layers proxy `/app/` (WebSocket connections) and `/apps/` (Reverb's signed HTTP API) to it:
+
+- Clients connect to the API's own host on 443 with `REVERB_APP_KEY`. Never publish the reverb port to the host.
+- `REVERB_HOST` in the deploy environment is the reverb container name with `REVERB_PORT=8080` and `REVERB_SCHEME=http`, because it is where the app and queue containers send broadcasts, not the public host.
+- `ShouldBroadcast` events go through the queue. If clients receive nothing, read the queue container log before the reverb one. Use `ShouldBroadcastNow` only for events that must not wait behind other jobs.
+- Do not add Laravel routes under `/app/` or `/apps/`; nginx sends both prefixes to reverb. `/broadcasting/auth` stays a Laravel route.
 
 No CI pipeline ships with the step. Whatever builds the image must also write the environment file the compose file and containers read.
 
@@ -165,6 +173,7 @@ Read before executing:
 
 - The app needs consistent JSON errors: run `essentials:install --features=api`, then delete any pre-existing exception handling that duplicates the renderer.
 - The app should stop allowing `migrate:fresh` in production: run `essentials:install --features=database`, which generates `bootDatabase()`.
+- The app needs realtime updates: run `essentials:install --packages=reverb --no-interaction`, define the channel authorization in `routes/channels.php`, and broadcast with an event implementing `ShouldBroadcast`. Run `--docker --force` afterwards only if the deployment files have no local edits, since the reverb sections are written at docker step time.
 - Validation messages need to differ per module: edit `messages()` in the generated `ApiExceptionRenderer`, not any package configuration.
 
 ## Anti-patterns

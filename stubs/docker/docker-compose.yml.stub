@@ -2,6 +2,9 @@
 #
 # The application image is built once from docker/production/Dockerfile
 # (-> ${IMAGE_NAME}:latest) and reused by the app, queue and scheduler services.
+# @realtime
+# The reverb service runs the same image too.
+# @end
 # nginx uses the stock image.
 #
 # Run it from the repository root:
@@ -44,7 +47,12 @@ x-logging: &default-logging
 # Limits scale with host RAM but are NOT a share of it. Pay the other tenants
 # first, then split what is left:
 #   stack budget = host RAM - database - cache - (OS + docker + CI reserve)
+# @unless-realtime
 #   split it app 57% / queue 29% / scheduler 10% / nginx 4%
+# @end
+# @realtime
+#   split it app 57% / queue 19% / reverb 10% / scheduler 10% / nginx 4%
+# @end
 # The defaults below are the 4 GB row (768m database + 384m cache + 600m reserve,
 # so roughly a 2.4 GB stack budget). Override per host in the deploy .env; the
 # table is in docker/production/README.md.
@@ -76,6 +84,12 @@ services:
     depends_on:
       app:
         condition: service_healthy
+# @realtime
+      # nginx resolves reverb:8080 when it loads its config, and refuses to
+      # start if the name does not exist yet.
+      reverb:
+        condition: service_healthy
+# @end
     healthcheck:
       # busybox wget (present in nginx:alpine) through the full path
       # nginx -> app:9000, so an unhealthy nginx means the real request path is
@@ -150,7 +164,13 @@ services:
     stop_grace_period: 120s
     # Keep the worker's --memory (MB, queue-entrypoint.sh) below this, or docker
     # kills the process before Laravel can restart it after a bloated job.
+# @unless-realtime
     mem_limit: ${QUEUE_MEM_LIMIT:-768m}
+# @end
+# @realtime
+    # 256m less than a stack without reverb, which is where reverb's cap comes from.
+    mem_limit: ${QUEUE_MEM_LIMIT:-512m}
+# @end
     mem_reservation: ${QUEUE_MEM_RESERVATION:-256m}
     cpus: ${QUEUE_CPUS:-1.0}
     logging: *default-logging
@@ -187,6 +207,40 @@ services:
     logging: *default-logging
     networks:
       - backend
+# @realtime
+
+  # ── reverb: the WebSocket server. One instance unless scaling is enabled ─────
+  reverb:
+    image: *app-image
+    container_name: ${CONTAINER_PREFIX:-myapp}_reverb
+    restart: unless-stopped
+    env_file: *env-file
+    command: ["/usr/local/bin/reverb-entrypoint"]
+    depends_on:
+      app:
+        condition: service_healthy
+    # No ports: clients arrive through the nginx container on /app/ and /apps/,
+    # and the app and queue containers publish to reverb:8080 over this network.
+    healthcheck:
+      # Reverb's own health route on its own port. This /up belongs to the
+      # WebSocket server, not to Laravel's router, so the cleanup step that
+      # removes the framework's /up does not affect it.
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/up > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Open connections are dropped on stop, and clients reconnect on their own.
+    stop_grace_period: 15s
+    # Each idle connection costs a few KB, so 256m holds thousands of them. Raise
+    # it with the connection count, not with traffic.
+    mem_limit: ${REVERB_MEM_LIMIT:-256m}
+    mem_reservation: ${REVERB_MEM_RESERVATION:-128m}
+    cpus: ${REVERB_CPUS:-0.5}
+    logging: *default-logging
+    networks:
+      - backend
+# @end
 
 volumes:
   # Persistent app storage (uploads, logs, any ops-placed credential file).

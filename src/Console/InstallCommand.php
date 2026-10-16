@@ -11,6 +11,7 @@ use GtsMeghni\EssentialsKit\Installers\BootstrapPatcher;
 use GtsMeghni\EssentialsKit\Installers\Cleaner;
 use GtsMeghni\EssentialsKit\Installers\DockerStack;
 use GtsMeghni\EssentialsKit\Installers\EnvAppender;
+use GtsMeghni\EssentialsKit\Installers\EnvSetter;
 use GtsMeghni\EssentialsKit\Installers\Package;
 use GtsMeghni\EssentialsKit\Installers\PackageInstaller;
 use GtsMeghni\EssentialsKit\Installers\RedisConfigurator;
@@ -123,7 +124,7 @@ final class InstallCommand extends Command
 
         // After the cleanup step, so the warning about the health route reads the
         // routes file in its final shape.
-        $this->writeDockerStack($files, $docker);
+        $this->writeDockerStack($files, $docker, $packages);
 
         // Composer runs last. It is the slowest and the only step that can fail
         // for reasons outside this package, so everything the kit owns is
@@ -399,15 +400,24 @@ final class InstallCommand extends Command
      * These are deployment inputs rather than application code: nothing in the
      * kit reads them, and the developer owns every value in them. The two
      * warnings below are the settings the stack silently depends on.
+     *
+     * This step runs before Composer, so Reverb counts as present when it is
+     * selected in this run as well as when an earlier run already required it.
+     *
+     * @param  list<Package>  $packages
      */
-    private function writeDockerStack(Filesystem $files, bool $wanted): void
+    private function writeDockerStack(Filesystem $files, bool $wanted, array $packages): void
     {
         if (! $wanted) {
             return;
         }
 
         $stack = new DockerStack($files, $this->laravel->basePath(), __DIR__.'/../../stubs');
-        $result = $stack->write($this->option('force') === true);
+
+        $realtime = $stack->requiresReverb()
+            || array_filter($packages, static fn (Package $package): bool => $package->key === 'reverb') !== [];
+
+        $result = $stack->write($this->option('force') === true, $realtime);
 
         foreach ($result['created'] as $target) {
             $this->components->info('Created '.$target);
@@ -431,6 +441,10 @@ final class InstallCommand extends Command
                 .'Generate the health endpoint feature, or point the probes in '
                 .'docker/production/docker-compose.yml and nginx/default.conf at a route that exists.',
             );
+        }
+
+        if ($realtime) {
+            $this->components->info('Added the reverb service, and proxied /app/ and /apps/ to it from both nginx layers.');
         }
 
         $this->components->info('Read docker/production/README.md before the first deploy.');
@@ -477,6 +491,7 @@ final class InstallCommand extends Command
                 $this->appendEnv($files, $package);
                 $this->patchUserModel($files, $package);
                 $this->guardTelescope($files, $package);
+                $this->finishReverb($files, $package);
             }
         }
     }
@@ -536,6 +551,48 @@ final class InstallCommand extends Command
         }
 
         $this->components->info('Registered Telescope outside production only, in '.implode(' and ', $changed));
+    }
+
+    /**
+     * Point every environment file at Reverb, and drop an Echo client nothing builds.
+     *
+     * install:broadcasting switches BROADCAST_CONNECTION in .env only, so a
+     * deploy built from .env.example would still broadcast to the log. It also
+     * writes resources/js/echo.js unconditionally, which in an API project whose
+     * cleanup removed package.json is a file no build will ever read: the
+     * clients are mobile or SPA apps that configure their own Pusher client.
+     */
+    private function finishReverb(Filesystem $files, Package $package): void
+    {
+        if ($package->key !== 'reverb') {
+            return;
+        }
+
+        $changed = (new EnvSetter($files, $this->laravel->basePath()))->set(['BROADCAST_CONNECTION' => 'reverb']);
+
+        if ($changed !== []) {
+            $this->components->info('Set BROADCAST_CONNECTION=reverb in your environment files.');
+        }
+
+        if ($files->exists($this->laravel->basePath('package.json'))) {
+            return;
+        }
+
+        $echo = $this->laravel->basePath('resources/js/echo.js');
+
+        if (! $files->exists($echo)) {
+            return;
+        }
+
+        $files->delete($echo);
+
+        $directory = dirname($echo);
+
+        if ($files->files($directory) === [] && $files->directories($directory) === []) {
+            $files->deleteDirectory($directory);
+        }
+
+        $this->components->info('Removed resources/js/echo.js, since the project has no package.json to build it.');
     }
 
     /**

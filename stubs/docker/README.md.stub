@@ -1,9 +1,18 @@
 # Production deployment
 
+<!-- @unless-realtime -->
 Four containers on one host: `app` (php-fpm), `nginx`, `queue` (`queue:work`) and
 `scheduler` (`schedule:work`). The app, queue and scheduler run the same image and
-differ only in the entrypoint compose gives them. The database and cache live in
-their own containers, already running on a shared docker network.
+differ only in the entrypoint compose gives them.
+<!-- @end -->
+<!-- @realtime -->
+Five containers on one host: `app` (php-fpm), `nginx`, `queue` (`queue:work`),
+`scheduler` (`schedule:work`) and `reverb` (`reverb:start`). The app, queue,
+scheduler and reverb run the same image and differ only in the entrypoint compose
+gives them.
+<!-- @end -->
+The database and cache live in their own containers, already running on a shared
+docker network.
 
 ```
 Internet
@@ -15,6 +24,10 @@ Internet
                             queue container              ← entrypoint/queue-entrypoint.sh
                             scheduler container          ← entrypoint/scheduler-entrypoint.sh
                                  ↳ external services: database, cache/queue, ...
+@realtime
+                 └─ /app/, /apps/ (WebSocket upgrade) reverb:8080
+                      └─ reverb container (reverb:start) ← entrypoint/reverb-entrypoint.sh
+@end
 ```
 
 Every file here ships with `myapp` and `example.com` placeholders. Replace them
@@ -29,10 +42,16 @@ before the first deploy.
 | `entrypoint/app-entrypoint.sh` | Dependency waits, migrations, cache warmup, `public/` publish, then `exec php-fpm`. |
 | `entrypoint/queue-entrypoint.sh` | Cache priming, then `exec queue:work` as `www-data`. |
 | `entrypoint/scheduler-entrypoint.sh` | Cache priming, then `exec schedule:work`. |
+<!-- @realtime -->
+| `entrypoint/reverb-entrypoint.sh` | Config cache, then `exec reverb:start` on `0.0.0.0:8080`. |
+<!-- @end -->
 | `php/php-fpm.conf` | Pool sizing, slowlog, `ping.path`. Mounted as `zzz-custom.conf` so it beats `www.conf`. |
 | `php/opcache.ini` | Production opcache, including `validate_timestamps=0`. |
 | `php/php.ini` | Limits, timeouts, upload sizes. |
 | `nginx/default.conf` | Container nginx: fastcgi to `app:9000`, dotfile denies. |
+<!-- @realtime -->
+| `nginx/default.conf` `/app/`, `/apps/` | WebSocket connections and Reverb's HTTP API, proxied to `reverb:8080`. The host nginx has the matching block. |
+<!-- @end -->
 | `vps-nginx/site.conf.example` | Host nginx: TLS, proxy to `127.0.0.1:3000`, upstream keepalive, maintenance page. |
 | `vps-nginx/maintenance.html` | Static page the host nginx serves while the app container is being replaced. |
 
@@ -111,6 +130,11 @@ Application keys, on top of the usual Laravel ones:
 | `LOG_CHANNEL=stderr` | Routes logs to `docker logs`, where compose rotates them. A file channel writes onto the storage volume instead. |
 | `SESSION_DRIVER=database` | Survives container replacement, unlike `file`. Needs the `sessions` table. |
 | `QUEUE_CONNECTION` | Whatever the queue worker should read. |
+<!-- @realtime -->
+| `BROADCAST_CONNECTION=reverb` | Without it every broadcast goes to the log driver and no client receives anything. |
+| `REVERB_APP_ID`, `REVERB_APP_KEY`, `REVERB_APP_SECRET` | The app credentials. Generate them once per environment and keep them stable: the key is public, clients connect with it, and the secret signs both broadcasts and private channel auth. |
+| `REVERB_HOST=myapp_reverb`, `REVERB_PORT=8080`, `REVERB_SCHEME=http` | Where the app and queue containers send broadcasts. This is the reverb container on the docker network, not the public hostname clients use. |
+<!-- @end -->
 
 Compose keys, all optional with defaults in the compose file:
 
@@ -125,9 +149,17 @@ Compose keys, all optional with defaults in the compose file:
 | `NETWORK_NAME` | `global_network` | Existing external network. |
 | `STORAGE_VOLUME` | `myapp_storage` | Existing external volume for `storage/`. |
 | `APP_MEM_LIMIT`, `APP_MEM_RESERVATION`, `APP_CPUS` | `1500m`, `768m`, `1.5` | app caps. |
+<!-- @unless-realtime -->
 | `QUEUE_MEM_LIMIT`, `QUEUE_MEM_RESERVATION`, `QUEUE_CPUS` | `768m`, `256m`, `1.0` | queue caps. |
+<!-- @end -->
+<!-- @realtime -->
+| `QUEUE_MEM_LIMIT`, `QUEUE_MEM_RESERVATION`, `QUEUE_CPUS` | `512m`, `256m`, `1.0` | queue caps, 256m below a stack without reverb. |
+<!-- @end -->
 | `SCHEDULER_MEM_LIMIT`, `SCHEDULER_MEM_RESERVATION`, `SCHEDULER_CPUS` | `256m`, `128m`, `0.5` | scheduler caps. |
 | `NGINX_MEM_LIMIT`, `NGINX_MEM_RESERVATION`, `NGINX_CPUS` | `128m`, `64m`, `0.5` | nginx caps. |
+<!-- @realtime -->
+| `REVERB_MEM_LIMIT`, `REVERB_MEM_RESERVATION`, `REVERB_CPUS` | `256m`, `128m`, `0.5` | reverb caps. |
+<!-- @end -->
 | `QUEUE_NAMES`, `QUEUE_TRIES`, `QUEUE_BACKOFF`, `QUEUE_TIMEOUT`, `QUEUE_SLEEP`, `QUEUE_MAX_JOBS`, `QUEUE_MAX_TIME`, `QUEUE_WORKER_MEMORY` | `default`, `3`, `10`, `60`, `3`, `500`, `3600`, `192` | `queue:work` flags. |
 
 Two rules that bite:
@@ -166,6 +198,12 @@ stack budget = host RAM - database - cache - (OS + docker + CI reserve)
 | 8 GB | 2g + 512m | 800m | ~4.6g | 2800m | 1200m | 384m | 256m | 44 |
 | 16 GB | 4g + 1g | 1g | ~10g | 6g | 2500m | 512m | 256m | 90 |
 
+<!-- @realtime -->
+With reverb, take 256m of the queue column for it: the 4 GB row ships queue `512m`
+and reverb `256m`. Size reverb from the number of open connections rather than
+from traffic, since each idle client costs only a few KB.
+
+<!-- @end -->
 The bold row is what ships here. External service sizes are examples; use the real
 ones, and re-derive after anything else lands on the host.
 
@@ -190,6 +228,38 @@ host nginx        proxy_read_timeout        65s
 php-fpm           request_terminate_timeout 75s
 ```
 
+<!-- @realtime -->
+## Realtime clients
+
+Clients speak the Pusher protocol to the API's own origin:
+
+| Client setting | Value |
+|---|---|
+| host | `example.com` |
+| port | `443` |
+| scheme / forceTLS | `https`, `true` |
+| key | `REVERB_APP_KEY` |
+| auth endpoint | `/broadcasting/auth`, for private and presence channels |
+
+Both nginx layers send `/app/` and `/apps/` straight to reverb with the upgrade
+headers. `/app/{key}` is where clients open their WebSocket. `/apps/{id}/` is
+Reverb's HTTP API (publish events, list channels and connections), which rejects
+any request not signed with `REVERB_APP_SECRET`, so exposing it lets another
+service publish without opening a hole. The app and queue containers still reach
+`reverb:8080` directly over the docker network, which keeps their broadcasts off
+public DNS, TLS and the host nginx.
+
+`/broadcasting/auth`, which private and presence channels call before
+subscribing, is an ordinary Laravel route and goes to php-fpm.
+
+Broadcasts implementing `ShouldBroadcast` go through the queue, so a stopped
+queue worker means no client receives them. Use `ShouldBroadcastNow` for events
+that must not wait behind other jobs.
+
+A deploy recreates the reverb container when the image changes, which closes
+every open connection. Pusher clients reconnect on their own within seconds.
+
+<!-- @end -->
 ## Deploy window
 
 `docker compose up -d` stops the old app container and starts the new one.
@@ -224,6 +294,15 @@ docker exec myapp_app php artisan about --only=environment,cache,drivers
 # 5. queue and scheduler
 docker logs --tail=15 myapp_queue
 docker logs --tail=15 myapp_scheduler
+# @realtime
+
+# 5b. reverb: healthy, and a WebSocket upgrade through the host answers 101
+docker logs --tail=15 myapp_reverb
+curl -s -o /dev/null -w '%{http_code}\n' --http1.1 \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+    --max-time 3 "https://example.com/app/<REVERB_APP_KEY>"
+# @end
 
 # 6. capacity against pm.max_children, and nothing at its memory ceiling
 nproc; free -m

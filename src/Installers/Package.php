@@ -125,6 +125,31 @@ final class Package
                 ],
             ),
             new self(
+                key: 'reverb',
+                name: 'laravel/reverb',
+                label: 'Laravel Reverb',
+                description: 'Realtime broadcasting over a self-hosted WebSocket server.',
+                question: 'Does this project need realtime broadcasting?',
+                // install:broadcasting first, with Reverb already required, so it
+                // skips its own Composer call and never reaches the npm prompt.
+                // reverb:install then finds routes/channels.php in place and only
+                // generates the app credentials and publishes config/reverb.php.
+                setup: [
+                    'install:broadcasting --reverb --without-node',
+                    'reverb:install',
+                ],
+                // reverb:install writes real credentials into .env only. These
+                // declare the keys in .env.example without inventing secrets.
+                env: [
+                    'REVERB_APP_ID' => '',
+                    'REVERB_APP_KEY' => '',
+                    'REVERB_APP_SECRET' => '',
+                    'REVERB_HOST' => 'localhost',
+                    'REVERB_PORT' => '8080',
+                    'REVERB_SCHEME' => 'http',
+                ],
+            ),
+            new self(
                 key: 'satim',
                 name: 'gts-meghni/laravel-satim',
                 label: 'Laravel SATIM',
