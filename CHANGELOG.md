@@ -1,6 +1,13 @@
 # Release Notes
 
-## [Unreleased](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.2.0...HEAD)
+## [Unreleased](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.3.0...HEAD)
+
+## [v1.3.0](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.2.0...v1.3.0) - 2026-10-16
+
+### Added
+
+- `laravel/reverb`, asked as a yes/no question like SATIM and captcha, or selected with `--packages=reverb`. Setup runs `install:broadcasting --reverb --without-node` then `reverb:install`, sets `BROADCAST_CONNECTION=reverb` in `.env` and `.env.example`, declares the `REVERB_*` keys in `.env.example`, and removes the generated `resources/js/echo.js` when the project has no `package.json` to build it.
+- When the project uses Reverb, the production Docker step adds a `reverb` service running `reverb:start` from the same image, with its own entrypoint, healthcheck on Reverb's `/up`, and resource caps. Both nginx layers proxy `/app/` (WebSocket connections) and `/apps/` (Reverb's signed HTTP API) to it with the upgrade headers, so clients and external publishers use the API's own origin. The app and queue containers still publish to `reverb:8080` over the docker network. Reverb's 256 MB comes out of the queue's default, which drops to 512 MB. Stacks without Reverb are unchanged.
 
 ## [v1.2.0](https://github.com/gts-meghni/laravel-essentials-kit/compare/v1.1.0...v1.2.0) - 2026-10-15
 
