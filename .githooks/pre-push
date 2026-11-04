@@ -1,0 +1,16 @@
+#!/bin/sh
+#
+# The full gate before anything leaves this machine: known vulnerabilities in
+# the locked dependencies, then formatting, static analysis, type coverage,
+# and the test suite through `composer test`.
+# Skip once with: git push --no-verify
+#
+# Enabled by `composer hooks`, which sets core.hooksPath to .githooks.
+
+set -e
+
+echo "pre-push: composer audit"
+composer audit
+
+echo "pre-push: composer test"
+composer test

@@ -78,7 +78,7 @@ final class InstallCommand extends Command
         {--redis= : Configure Redis with the given client: none, phpredis, or predis}
         {--redis-cache : Use Redis as the cache store}
         {--sanctum= : How Sanctum authenticates: token or cookie}
-        {--tooling : Install Pint, Larastan, Pest, and Boost}
+        {--tooling : Install Pint, Larastan, Pest, and Boost, with pre-commit and pre-push git hooks}
         {--docker : Write the production Docker deployment files}
         {--timezone : Set the application timezone to Africa/Algiers}
         {--cleanup : Remove files a JSON API project does not need}
@@ -117,7 +117,7 @@ final class InstallCommand extends Command
         $sanctum = $this->selectedSanctumMode($packages);
         $redis = $this->selectedRedis();
         $timezone = $this->wants('timezone', 'Set the application timezone to '.self::TIMEZONE.'?');
-        $tooling = $this->wants('tooling', 'Install Pint, Larastan, Pest, and Boost?');
+        $tooling = $this->wants('tooling', 'Install Pint, Larastan, Pest, and Boost, with pre-commit and pre-push git hooks?');
         $docker = $this->wants('docker', 'Write the production Docker deployment files into docker/production?');
         $cleanup = $this->plannedCleanup($files);
 
@@ -960,8 +960,55 @@ final class InstallCommand extends Command
             $this->components->info('Created '.$target);
         }
 
+        $this->writeGitHooks($files);
         $this->writeComposerScripts($files);
+        $this->enableGitHooks($files, $installer);
         $this->runSetup($installer, Tooling::SETUP);
+    }
+
+    /**
+     * Write the pre-commit and pre-push hooks into .githooks.
+     */
+    private function writeGitHooks(Filesystem $files): void
+    {
+        foreach (Tooling::HOOKS as $stub => $target) {
+            $path = $this->laravel->basePath($target);
+
+            if ($files->exists($path) && $this->option('force') !== true) {
+                $this->components->warn('Kept the existing '.$target.'.');
+
+                continue;
+            }
+
+            $files->ensureDirectoryExists(dirname($path));
+            $files->put($path, $files->get(__DIR__.'/../../stubs/'.$stub));
+            $files->chmod($path, 0755);
+
+            $this->components->info('Created '.$target);
+        }
+    }
+
+    /**
+     * Point git at .githooks now, since Composer has already run.
+     *
+     * The post-autoload-dump entry covers every later install, including a
+     * fresh clone, but nothing would fire it until the next Composer command.
+     */
+    private function enableGitHooks(Filesystem $files, PackageInstaller $installer): void
+    {
+        if (! $files->exists($this->laravel->basePath('.git'))) {
+            $this->components->warn('No git repository yet. Run composer hooks after git init to enable .githooks.');
+
+            return;
+        }
+
+        if ($installer->script('hooks')->successful()) {
+            $this->components->info('Enabled the git hooks in .githooks');
+
+            return;
+        }
+
+        $this->components->warn('Could not enable the git hooks. Run composer hooks manually.');
     }
 
     /**
@@ -984,6 +1031,17 @@ final class InstallCommand extends Command
         foreach (Tooling::SCRIPTS as $name => $script) {
             $scripts[$name] = $script;
         }
+
+        // Every composer install in a checkout, a fresh clone included, then
+        // enables the hooks without anyone having to remember to.
+        $dump = $scripts['post-autoload-dump'] ?? [];
+        $dump = is_array($dump) ? array_values($dump) : [$dump];
+
+        if (! in_array('@hooks', $dump, true)) {
+            $dump[] = '@hooks';
+        }
+
+        $scripts['post-autoload-dump'] = $dump;
 
         $manifest['scripts'] = $scripts;
 

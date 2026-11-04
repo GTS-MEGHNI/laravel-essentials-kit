@@ -50,6 +50,14 @@ final class PackageInstaller
     }
 
     /**
+     * Run a script from the application composer.json.
+     */
+    public function script(string $name): ProcessResult
+    {
+        return $this->run('composer run-script '.$name.' --no-interaction');
+    }
+
+    /**
      * Run an Artisan command in a fresh process so newly installed code is loaded.
      */
     public function artisan(string $command): ProcessResult

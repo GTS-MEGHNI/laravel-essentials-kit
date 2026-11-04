@@ -54,6 +54,27 @@ final class Tooling
     ];
 
     /**
+     * Git hooks written into .githooks, executable.
+     *
+     * pre-commit stays fast, Pint on the staged files and PHPStan, so it does
+     * not get skipped by habit. pre-push runs composer audit and the full gate.
+     *
+     * @var array<string, string>
+     */
+    public const array HOOKS = [
+        'tooling/githooks/pre-commit.stub' => '.githooks/pre-commit',
+        'tooling/githooks/pre-push.stub' => '.githooks/pre-push',
+    ];
+
+    /**
+     * Point git at .githooks, only inside a checkout.
+     *
+     * file_exists rather than is_dir, because .git is a file in a worktree. A
+     * Docker build or a deploy without .git skips it instead of failing.
+     */
+    public const string HOOKS_COMMAND = "@php -r \"if (file_exists('.git')) { passthru('git config core.hooksPath .githooks'); }\"";
+
+    /**
      * Composer scripts added to the application so the gates are one command each.
      *
      * @var array<string, list<string>>
@@ -65,5 +86,6 @@ final class Tooling
         'test:types' => ['vendor/bin/pest --type-coverage --min=100'],
         'test:unit' => ['vendor/bin/pest --parallel'],
         'test' => ['@analyse', '@lint:check', '@test:types', '@test:unit'],
+        'hooks' => [self::HOOKS_COMMAND],
     ];
 }

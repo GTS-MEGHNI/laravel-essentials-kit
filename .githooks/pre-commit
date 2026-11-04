@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Fast checks on every commit: Pint on the staged PHP files, then PHPStan.
+# The full gate runs in pre-push. Skip once with: git commit --no-verify
+#
+# Enabled by `composer hooks`, which sets core.hooksPath to .githooks.
+
+set -e
+
+files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.php')
+
+if [ -n "$files" ]; then
+    echo "pre-commit: checking the formatting of the staged PHP files"
+
+    # One path per line, so paths with spaces survive.
+    old_ifs=$IFS
+    IFS='
+'
+    set -- $files
+    IFS=$old_ifs
+
+    if ! vendor/bin/pint --test "$@"; then
+        echo "pre-commit: run composer lint, stage the result, and commit again." >&2
+        exit 1
+    fi
+fi
+
+echo "pre-commit: static analysis"
+composer analyse

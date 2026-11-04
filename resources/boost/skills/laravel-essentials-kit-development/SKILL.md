@@ -55,6 +55,8 @@ Pass `--no-interaction` in any scripted context. Without explicit flags a non-in
 
 `--sanctum=` takes `token` or `cookie` and only matters with `--packages=sanctum`. `token`, the default, adds `HasApiTokens` to `User`. `cookie` leaves it out and adds `$middleware->statefulApi()` to `bootstrap/app.php`; the application then still needs `SANCTUM_STATEFUL_DOMAINS`, `SESSION_DOMAIN`, and `'supports_credentials' => true` in `config/cors.php`. Do not add `HasApiTokens` to a cookie-only application.
 
+`--tooling` also writes `.githooks/pre-commit` (Pint on staged PHP files, then `composer analyse`) and `.githooks/pre-push` (`composer audit`, then `composer test`), and adds a `hooks` script, run from `post-autoload-dump`, that sets `core.hooksPath`. Fix what a hook reports instead of committing with `--no-verify`.
+
 Do not run `php artisan install:api` first. The installer creates `routes/api.php` and adds `api:` to `withRouting()` itself, without pulling in Sanctum.
 
 ### 3. Use the generated API surface

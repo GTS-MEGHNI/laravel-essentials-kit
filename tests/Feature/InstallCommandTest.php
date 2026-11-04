@@ -419,6 +419,61 @@ it('installs tooling and writes its configuration', function (): void {
     Process::assertRan(fn ($process): bool => str_contains($process->command, 'artisan boost:install'));
 });
 
+it('writes executable git hooks and enables them in a checkout', function (): void {
+    Process::fake();
+
+    $files = new Filesystem;
+    $files->ensureDirectoryExists($this->appPath.'/.git');
+    $files->put($this->appPath.'/composer.json', json_encode([
+        'name' => 'acme/api',
+        'scripts' => ['post-autoload-dump' => ['@php artisan package:discover --ansi']],
+    ], JSON_PRETTY_PRINT));
+
+    $this->artisan('essentials:install', ['--features' => [], '--tooling' => true, '--no-interaction' => true])
+        ->assertSuccessful();
+    $this->artisan('essentials:install', ['--features' => [], '--tooling' => true, '--no-interaction' => true])
+        ->assertSuccessful();
+
+    expect($files->get($this->appPath.'/.githooks/pre-commit'))
+        ->toContain('vendor/bin/pint --test "$@"')
+        ->toContain('composer analyse')
+        ->and($files->get($this->appPath.'/.githooks/pre-push'))
+        ->toContain('composer audit')
+        ->toContain('composer test');
+
+    if (PHP_OS_FAMILY !== 'Windows') {
+        expect(is_executable($this->appPath.'/.githooks/pre-commit'))->toBeTrue()
+            ->and(is_executable($this->appPath.'/.githooks/pre-push'))->toBeTrue();
+    }
+
+    $scripts = json_decode($files->get($this->appPath.'/composer.json'), true)['scripts'];
+
+    expect($scripts['post-autoload-dump'])->toBe(['@php artisan package:discover --ansi', '@hooks'])
+        ->and($scripts['hooks'][0])->toContain('git config core.hooksPath .githooks');
+
+    Process::assertRan(fn ($process): bool => str_contains($process->command, 'composer run-script hooks'));
+});
+
+it('leaves the git hooks disabled outside a checkout', function (): void {
+    Process::fake();
+
+    $this->artisan('essentials:install', ['--features' => [], '--tooling' => true, '--no-interaction' => true])
+        ->expectsOutputToContain('Run composer hooks after git init')
+        ->assertSuccessful();
+
+    Process::assertNotRan(fn ($process): bool => str_contains($process->command, 'composer run-script hooks'));
+});
+
+it('ships the same git hooks this repository uses', function (): void {
+    $files = new Filesystem;
+    $root = base_path_of_package();
+
+    foreach (['pre-commit', 'pre-push'] as $hook) {
+        expect($files->get($root.'/.githooks/'.$hook))
+            ->toBe($files->get($root.'/stubs/tooling/githooks/'.$hook.'.stub'));
+    }
+});
+
 it('refuses to clean up a dirty working tree', function (): void {
     Process::fake(['git status*' => Process::result(output: ' M app/Foo.php')]);
 

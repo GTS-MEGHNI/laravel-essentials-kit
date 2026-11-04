@@ -26,6 +26,8 @@ Clone your fork, then install the dev dependencies:
 composer install
 ```
 
+`composer install` also points git at the hooks in `.githooks`. If you cloned before they existed, run `composer hooks` once. `pre-commit` checks the formatting of the staged PHP files and runs PHPStan. `pre-push` runs `composer audit` and then `composer test`. Skip either once with `--no-verify`.
+
 ## Lint
 
 Lint your code:

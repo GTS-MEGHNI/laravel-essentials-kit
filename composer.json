@@ -56,7 +56,11 @@
     "scripts": {
         "post-autoload-dump": [
             "@clear",
-            "@prepare"
+            "@prepare",
+            "@hooks"
+        ],
+        "hooks": [
+            "@php -r \"if (file_exists('.git')) { passthru('git config core.hooksPath .githooks'); }\""
         ],
         "prepare": [
             "@php vendor/bin/testbench package:discover --ansi"

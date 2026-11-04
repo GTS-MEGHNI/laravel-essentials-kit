@@ -401,6 +401,15 @@ composer test:unit    # the suite
 composer test         # all of the above, in order
 ```
 
+It also writes two git hooks into `.githooks` and enables them with `git config core.hooksPath .githooks`:
+
+| Hook | Runs |
+|---|---|
+| `pre-commit` | Pint on the staged PHP files, then `composer analyse` |
+| `pre-push` | `composer audit`, then `composer test` |
+
+The commit hook stays fast so it does not get skipped by habit, and the push hook runs the full gate before anything leaves the machine. Skip either once with `--no-verify`. The installer adds `@hooks` to `post-autoload-dump`, so every `composer install` in a checkout enables them, including on a fresh clone. The script checks for `.git` first, so a Docker build or a deploy without the repository is unaffected. Existing hook files are kept unless you pass `--force`.
+
 ### API-only cleanup
 
 Optionally removes what a JSON API does not need: Blade views, frontend assets and build configuration, browser routes, and the view and session configuration files.
@@ -477,7 +486,7 @@ php artisan essentials:install \
 | `--redis-cache` | Use Redis as the cache store |
 | `--sanctum=` | How Sanctum authenticates: `token` (default) or `cookie` |
 | `--timezone` | Set the application timezone to `Africa/Algiers` |
-| `--tooling` | Install and configure the quality tooling |
+| `--tooling` | Install and configure the quality tooling and its git hooks |
 | `--docker` | Write the production Docker deployment into `docker/production` |
 | `--cleanup` | Remove files a JSON API does not need |
 | `--all` | Generate every feature |
