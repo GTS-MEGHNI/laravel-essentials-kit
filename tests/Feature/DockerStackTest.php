@@ -272,6 +272,34 @@ it('proxies websocket upgrades to reverb through both nginx layers', function ()
         ->and(strpos($nginx, '(app|apps)'))->toBeLessThan(strpos($nginx, '\.(js|css'));
 });
 
+it('never lets a client choose the forwarded ip', function (): void {
+    Process::fake();
+
+    $this->artisan('essentials:install', [
+        '--packages' => ['reverb'],
+        '--docker' => true,
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    $nginx = deployFile($this->appPath, 'docker/production/nginx/default.conf');
+    $host = deployFile($this->appPath, 'docker/production/vps-nginx/site.conf.example');
+
+    // The app trusts every proxy, so an appended header would hand Laravel
+    // whatever X-Forwarded-For the browser sent.
+    foreach ([$nginx, $host] as $config) {
+        expect($config)->not->toContain('$proxy_add_x_forwarded_for');
+    }
+
+    expect($host)
+        ->toContain('proxy_set_header X-Forwarded-For    $remote_addr;')
+        ->toContain('proxy_set_header X-Forwarded-For   $remote_addr;')
+        ->toContain('proxy_set_header X-Forwarded-Prefix "";')
+        ->and($nginx)
+        ->toContain('fastcgi_param HTTP_X_FORWARDED_FOR    $remote_addr;')
+        ->toContain('fastcgi_param HTTP_X_FORWARDED_PREFIX "";')
+        ->toContain('proxy_set_header X-Forwarded-For   $remote_addr;');
+});
+
 it('never leaks a section marker into a deployment file', function (bool $realtime): void {
     Process::fake();
 

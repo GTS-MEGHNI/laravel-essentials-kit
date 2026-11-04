@@ -43,7 +43,7 @@ Selected defaults are generated into `app/Providers/EssentialsServiceProvider.ph
 | Database safety | `DB::prohibitDestructiveCommands()` in production |
 | Strict models | `Model::shouldBeStrict()` outside production, unwrapped JSON resources |
 | Immutable dates | `Date::use(CarbonImmutable::class)` |
-| Security defaults | Strong password rules, no stray HTTP calls in tests |
+| Security defaults | `Password::defaults()` of 12 characters in production and 8 elsewhere, no stray HTTP calls in tests |
 | Slow query logging | Per-query and cumulative query time warnings |
 
 ### API layer
@@ -72,7 +72,7 @@ The installer wires these into your `bootstrap/app.php`, which is where Laravel 
 })
 ```
 
-`trustProxies(at: '*')` is part of the same patch because an API behind a reverse proxy is broken without it, quietly: Laravel ignores `X-Forwarded-Proto` until the proxy is trusted, so `url()` builds `http://` links, signed URLs 403 against their own signature, and `$request->ip()` returns the proxy, giving every client one rate limit bucket and one address in the logs. `'*'` is correct while the application is only reachable through that proxy; narrow it if the application is ever published directly. This is also why the kit does not call `URL::forceScheme('https')`, which fixes the URLs while leaving the client IP wrong.
+`trustProxies(at: '*')` is part of the same patch because an API behind a reverse proxy is broken without it, quietly: Laravel ignores `X-Forwarded-Proto` until the proxy is trusted, so `url()` builds `http://` links, signed URLs 403 against their own signature, and `$request->ip()` returns the proxy, giving every client one rate limit bucket and one address in the logs. `'*'` is correct only while the application is reachable through that proxy alone, and that proxy overwrites `X-Forwarded-For` instead of appending to it, as the [Docker step](#production-docker-deployment) configures nginx to do. If browsers reach your nginx and PHP directly, with no proxy in front, remove the line or pass the proxy's address to `at:`: with `'*'`, any client can send its own `X-Forwarded-For` and choose the IP that lands in your logs and rate limiter. This is also why the kit does not call `URL::forceScheme('https')`, which fixes the URLs while leaving the client IP wrong.
 
 Registering from a service provider instead would look tidier, but it breaks wherever the exception handler is decorated. Collision does exactly that in console and test contexts, which would silently disable the envelope in your feature tests. The patch is skipped if it is already present, and if your bootstrap file has been reshaped the installer says so and leaves it alone.
 
@@ -274,6 +274,8 @@ Packages that expect something on your `User` model get it wired automatically, 
 
 Each is added once and skipped if already present, so re-running is safe.
 
+`HasApiTokens` is only needed for personal access tokens. If the application authenticates through Sanctum's session cookies alone, you can remove it from the model.
+
 Telescope is installed as a development dependency, and `telescope:install` registers its published provider in `bootstrap/providers.php` unconditionally. That provider extends a class the package ships, so a production deploy running `composer install --no-dev` fatals on every request before the application boots. The installer moves the registration out of the manifest and into `AppServiceProvider::register()` instead:
 
 ```php
@@ -344,7 +346,7 @@ new OA\Response(
 | `L5_SWAGGER_PASSWORD` | empty | HTTP basic password |
 | `L5_SWAGGER_GENERATE_ALWAYS` | `true` | Rebuild the documents per request |
 
-Leaving the credentials empty leaves the docs open, which is why the installer appends all four keys to `.env` and `.env.example`: an empty value you can see is likelier to get filled in than a key you never knew existed. Set both in production. Credentials are compared with `hash_equals`, so a wrong guess does not leak their length in timing.
+With the credentials empty, the docs are open outside production and return 404 in production, so a forgotten value hides the docs instead of publishing them. The installer appends all four keys to `.env` and `.env.example`, because an empty value you can see is likelier to get filled in than a key you never knew existed. To serve the docs in production, set both. Credentials are compared with `hash_equals`, so a wrong guess does not leak their length in timing.
 
 Set `L5_SWAGGER_GENERATE_ALWAYS=false` in production and generate during deployment instead, since regenerating on every request parses your whole annotation tree per request:
 

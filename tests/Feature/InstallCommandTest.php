@@ -2,10 +2,14 @@
 
 declare(strict_types=1);
 
+use App\Http\Middleware\ProtectApiDocs;
 use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\Process;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 beforeEach(function (): void {
     $this->appPath = sys_get_temp_dir().'/essentials-kit-'.bin2hex(random_bytes(6));
@@ -59,7 +63,9 @@ it('generates a provider containing every boot group', function (): void {
         ->toContain('$this->bootObservability();')
         ->toContain('DB::prohibitDestructiveCommands($this->app->isProduction());')
         ->toContain('Date::use(CarbonImmutable::class);')
-        ->toContain('Model::shouldBeStrict(! $this->app->isProduction());');
+        ->toContain('Model::shouldBeStrict(! $this->app->isProduction());')
+        ->toContain('? Password::min(12)')
+        ->not->toContain('Password::min(12)->uncompromised()');
 });
 
 it('generates only the selected boot groups', function (): void {
@@ -772,6 +778,38 @@ it('scaffolds the openapi definitions when l5-swagger is installed', function ()
         ->toContain("base_path('app/OpenApi/Backoffice')")
         ->toContain("env('L5_SWAGGER_USERNAME')")
         ->toContain('ProtectApiDocs::class');
+});
+
+it('hides the api docs in production until credentials are set', function (): void {
+    Process::fake();
+
+    $this->artisan('essentials:install', ['--features' => [], '--packages' => ['swagger'], '--no-interaction' => true])
+        ->assertSuccessful();
+
+    if (! class_exists(ProtectApiDocs::class, false)) {
+        require $this->appPath.'/app/Http/Middleware/ProtectApiDocs.php';
+    }
+
+    $guard = new ProtectApiDocs;
+    $next = static fn (): Response => new Response('docs');
+    $status = static function () use ($guard, $next): int {
+        try {
+            return $guard->handle(Request::create('/api/documentation'), $next)->getStatusCode();
+        } catch (HttpException $exception) {
+            return $exception->getStatusCode();
+        }
+    };
+
+    config(['l5-swagger.enabled' => true, 'l5-swagger.auth.username' => '', 'l5-swagger.auth.password' => '']);
+
+    $this->app['env'] = 'local';
+    expect($status())->toBe(200);
+
+    $this->app['env'] = 'production';
+    expect($status())->toBe(404);
+
+    config(['l5-swagger.auth.username' => 'docs', 'l5-swagger.auth.password' => 'secret']);
+    expect($status())->toBe(401);
 });
 
 it('keeps an existing l5-swagger config unless forced', function (): void {

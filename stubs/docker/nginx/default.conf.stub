@@ -11,10 +11,15 @@ real_ip_header   X-Forwarded-For;
 real_ip_recursive on;
 
 # Note what this does to PHP: REMOTE_ADDR reaching the app is now the real client,
-# not the docker gateway. So Laravel's trustProxies() must be `at: '*'` — a subnet
+# not the docker gateway. So Laravel's trustProxies() must be `at: '*'`: a subnet
 # allow-list would no longer match the connecting address and the X-Forwarded-*
-# headers would be discarded. Safe because :3000 is bound to 127.0.0.1, so only
-# the host nginx can reach this server.
+# headers would be discarded.
+#
+# `at: '*'` then trusts REMOTE_ADDR, which is the client itself, so Laravel reads
+# the client IP from X-Forwarded-For. A raw header still carries whatever the
+# browser sent in front of the real address, so the PHP and Reverb locations
+# below replace it with the resolved $remote_addr. The host nginx overwrites it
+# too, but this layer must not depend on that.
 
 server {
     listen 80;
@@ -89,7 +94,7 @@ server {
         proxy_set_header Connection        "upgrade";
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
 
         # Reverb pings an idle client every 60s (REVERB_APP_PING_INTERVAL), so a
@@ -124,6 +129,14 @@ server {
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param DOCUMENT_ROOT   $document_root;
+
+        # Hand PHP the client address resolved above, never the raw header: with
+        # trustProxies(at: '*') a forged X-Forwarded-For entry would become
+        # $request->ip(), in the logs, the audit trail and the rate limiter.
+        # X-Forwarded-Prefix is cleared for the same reason: Laravel trusts it
+        # and prepends it to every generated URL.
+        fastcgi_param HTTP_X_FORWARDED_FOR    $remote_addr;
+        fastcgi_param HTTP_X_FORWARDED_PREFIX "";
 
         # 60s here, 75s request_terminate_timeout in php-fpm: nginx returns the
         # 504 first, php-fpm then reclaims the worker.

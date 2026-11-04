@@ -6,11 +6,16 @@
      * X-Forwarded-* headers: the URLs come out right while $request->ip() still
      * returns the proxy, so the rate limiter keys every client the same and the
      * logs show one address. trustProxies() in bootstrap/app.php fixes all of it.
+     *
+     * uncompromised() is left out on purpose: it calls api.pwnedpasswords.com on
+     * every validation, waits up to 30 seconds when outbound traffic is blocked,
+     * and then accepts the password anyway. Add ->uncompromised() to the
+     * production rule if the server can reach that API.
      */
     private function bootSecurity(): void
     {
         Password::defaults(fn (): Password => $this->app->isProduction()
-            ? Password::min(12)->uncompromised()
+            ? Password::min(12)
             : Password::min(8));
 
         if ($this->app->runningUnitTests()) {

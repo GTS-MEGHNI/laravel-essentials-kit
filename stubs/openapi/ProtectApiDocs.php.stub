@@ -12,9 +12,10 @@ use Symfony\Component\HttpFoundation\Response;
  * Guard the documentation routes: the UI, the JSON documents, and the assets.
  *
  * Set L5_SWAGGER_ENABLED=false to make them return 404 outright. Otherwise set
- * L5_SWAGGER_USERNAME and L5_SWAGGER_PASSWORD to demand HTTP basic credentials,
- * which is what production should do. Leaving both unset means the docs are
- * open, so only do that locally.
+ * L5_SWAGGER_USERNAME and L5_SWAGGER_PASSWORD to demand HTTP basic credentials.
+ * Without both, the docs are open outside production and return 404 in
+ * production, so a forgotten credential hides the docs instead of publishing
+ * the whole API surface.
  */
 final class ProtectApiDocs
 {
@@ -29,6 +30,8 @@ final class ProtectApiDocs
         $password = config('l5-swagger.auth.password');
 
         if (! is_string($username) || $username === '' || ! is_string($password) || $password === '') {
+            abort_if(app()->isProduction(), 404);
+
             return $next($request);
         }
 

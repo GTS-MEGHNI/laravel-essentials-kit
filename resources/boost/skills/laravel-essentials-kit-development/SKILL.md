@@ -70,7 +70,7 @@ Do not add per-controller try/catch blocks. `ApiExceptionRenderer` already conve
 
 To vary error messages by route group, edit the `messages()` method in `ApiExceptionRenderer`.
 
-The API middleware and exception rendering are wired in `bootstrap/app.php`, not in a service provider. That patch also adds `$middleware->trustProxies(at: '*')`, which is what makes `https://` URLs, signed URLs, and real client IPs work behind a reverse proxy. Do not replace it with `URL::forceScheme('https')`: that corrects the URLs while `$request->ip()` still returns the proxy, so the rate limiter keys every client the same and the logs show one address. Narrow the `'*'` only if the application becomes reachable without going through the proxy.
+The API middleware and exception rendering are wired in `bootstrap/app.php`, not in a service provider. That patch also adds `$middleware->trustProxies(at: '*')`, which is what makes `https://` URLs, signed URLs, and real client IPs work behind a reverse proxy. Do not replace it with `URL::forceScheme('https')`: that corrects the URLs while `$request->ip()` still returns the proxy, so the rate limiter keys every client the same and the logs show one address. `'*'` is safe only when every request comes through a proxy that overwrites `X-Forwarded-For` with `$remote_addr`, as the generated nginx files do. Never switch either nginx layer to `$proxy_add_x_forwarded_for`. If browsers reach the application without a proxy, remove `trustProxies()` or pass the proxy's address to `at:`, otherwise any client can forge the IP Laravel logs and rate limits.
 
 ### 4. Document endpoints
 
@@ -85,7 +85,7 @@ content: new OA\JsonContent(ref: '#/components/schemas/ErrorResponse'),
 new OA\Property(property: 'meta', ref: '#/components/schemas/PaginationMeta'),
 ```
 
-Access is guarded by `app/Http/Middleware/ProtectApiDocs`: `L5_SWAGGER_ENABLED=false` returns 404, and `L5_SWAGGER_USERNAME` plus `L5_SWAGGER_PASSWORD` demand HTTP basic credentials. Set both in production.
+Access is guarded by `app/Http/Middleware/ProtectApiDocs`: `L5_SWAGGER_ENABLED=false` returns 404, and `L5_SWAGGER_USERNAME` plus `L5_SWAGGER_PASSWORD` demand HTTP basic credentials. Without both, the docs return 404 in production and stay open elsewhere. Set `L5_SWAGGER_GENERATE_ALWAYS=false` in production and run `php artisan l5-swagger:generate --all` during deployment.
 
 ### 5. Use the geographic data
 

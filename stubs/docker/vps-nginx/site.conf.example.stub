@@ -97,10 +97,15 @@ server {
         proxy_set_header Connection        "";
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host  $host;
-        proxy_set_header X-Forwarded-Port  $server_port;
+        # This nginx is the edge, so it sets X-Forwarded-For from the connection
+        # instead of appending to what the browser sent. The app trusts the
+        # proxy with at: '*', and an appended header would let any client pick
+        # its own IP. X-Forwarded-Prefix is cleared because Laravel trusts it too.
+        proxy_set_header X-Forwarded-For    $remote_addr;
+        proxy_set_header X-Forwarded-Proto  $scheme;
+        proxy_set_header X-Forwarded-Host   $host;
+        proxy_set_header X-Forwarded-Port   $server_port;
+        proxy_set_header X-Forwarded-Prefix "";
 
         # The container answers with 504 at 60s, php-fpm kills the worker at 75s.
         proxy_connect_timeout 5s;
@@ -146,7 +151,7 @@ server {
         proxy_set_header Connection        "upgrade";
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
 
         # Above Reverb's 60s ping interval, and in step with the container nginx.

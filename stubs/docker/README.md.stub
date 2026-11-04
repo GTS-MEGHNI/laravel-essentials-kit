@@ -86,11 +86,26 @@ environment file described below.
    })
    ```
 
-   `at: '*'` is correct here, and only because the container port is published on
-   `127.0.0.1`: nothing but the host nginx can reach it, so no untrusted client
-   can forge the headers. Do not narrow it to the docker subnet — the container
-   nginx rewrites `REMOTE_ADDR` to the real client with `real_ip_header`, so a
-   subnet allow-list would match nothing and the headers would be dropped again.
+   `at: '*'` is correct here because of three things working together:
+
+   - The container port is published on `127.0.0.1`, so nothing but the host
+     nginx can reach it.
+   - The host nginx sets `X-Forwarded-For` to `$remote_addr` instead of appending
+     to the header the browser sent.
+   - The container nginx passes PHP the resolved client address, not the raw
+     header.
+
+   Keep all three if you edit the nginx files. With `$proxy_add_x_forwarded_for`
+   on either layer, a client sending its own `X-Forwarded-For` chooses the IP
+   that Laravel logs and rate limits. Do not narrow `at:` to the docker subnet
+   either: the container nginx rewrites `REMOTE_ADDR` to the real client with
+   `real_ip_header`, so a subnet allow-list would match nothing and the headers
+   would be dropped again.
+
+   If a load balancer or another proxy sits in front of the host nginx, add
+   `set_real_ip_from <its address>;` and `real_ip_header X-Forwarded-For;` to the
+   host config and keep `$remote_addr`. The host nginx then believes the address
+   that proxy reports, and nothing a browser sends.
 
 4. Set `pm.max_children` in `php/php-fpm.conf` and the memory limits together, from
    real host numbers. See [Sizing](#sizing).
