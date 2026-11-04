@@ -274,7 +274,14 @@ Packages that expect something on your `User` model get it wired automatically, 
 
 Each is added once and skipped if already present, so re-running is safe.
 
-`HasApiTokens` is only needed for personal access tokens. If the application authenticates through Sanctum's session cookies alone, you can remove it from the model.
+Sanctum asks one more question, or takes `--sanctum=`, because its two modes need different wiring:
+
+| Mode | For | What the installer does |
+|---|---|---|
+| `token` (default) | Mobile apps and other clients sending a bearer token | Adds `HasApiTokens` to `User` |
+| `cookie` | A first-party SPA on the same parent domain as the API | Skips `HasApiTokens` and adds `$middleware->statefulApi()` to `bootstrap/app.php` |
+
+`statefulApi()` is added only once Composer has installed Sanctum, since it resolves Sanctum's middleware at runtime. Cookie mode still needs three settings that depend on where the SPA is hosted, so the installer prints them instead of guessing: `SANCTUM_STATEFUL_DOMAINS` for the SPA's host, `SESSION_DOMAIN` for the shared parent domain, and `'supports_credentials' => true` in `config/cors.php`, published with `php artisan config:publish cors`.
 
 Telescope is installed as a development dependency, and `telescope:install` registers its published provider in `bootstrap/providers.php` unconditionally. That provider extends a class the package ships, so a production deploy running `composer install --no-dev` fatals on every request before the application boots. The installer moves the registration out of the manifest and into `AppServiceProvider::register()` instead:
 
@@ -468,6 +475,7 @@ php artisan essentials:install \
 | `--packages=*` | Packages to install |
 | `--redis=` | Configure a Redis client: `none`, `phpredis`, or `predis` |
 | `--redis-cache` | Use Redis as the cache store |
+| `--sanctum=` | How Sanctum authenticates: `token` (default) or `cookie` |
 | `--timezone` | Set the application timezone to `Africa/Algiers` |
 | `--tooling` | Install and configure the quality tooling |
 | `--docker` | Write the production Docker deployment into `docker/production` |

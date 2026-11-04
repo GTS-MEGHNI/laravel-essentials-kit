@@ -749,6 +749,106 @@ it('does not add the same user model traits twice', function (): void {
         ->and(substr_count($model, 'use Laravel\Sanctum\HasApiTokens;'))->toBe(1);
 });
 
+function stubBootstrap(string $path): void
+{
+    (new Filesystem)->put($path.'/bootstrap/app.php', <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        //
+    })
+    ->withExceptions(function (Exceptions $exceptions): void {
+        //
+    })->create();
+
+PHP);
+}
+
+it('sets sanctum up for cookie authentication without api tokens', function (): void {
+    Process::fake();
+    stubUserModel($this->appPath);
+    stubBootstrap($this->appPath);
+
+    $this->artisan('essentials:install', [
+        '--features' => ['api'],
+        '--packages' => ['sanctum'],
+        '--sanctum' => 'cookie',
+        '--no-interaction' => true,
+    ])
+        ->expectsOutputToContain('SANCTUM_STATEFUL_DOMAINS')
+        ->assertSuccessful();
+
+    $files = new Filesystem;
+    $bootstrap = $files->get($this->appPath.'/bootstrap/app.php');
+
+    expect($files->get($this->appPath.'/app/Models/User.php'))->not->toContain('HasApiTokens')
+        ->and($bootstrap)
+        ->toContain('$middleware->statefulApi();')
+        ->toContain("\$middleware->trustProxies(at: '*');");
+
+    exec('php -l '.escapeshellarg($this->appPath.'/bootstrap/app.php'), $output, $status);
+
+    expect($status)->toBe(0);
+})->skipOnWindows();
+
+it('does not make the api stateful twice', function (): void {
+    Process::fake();
+    stubBootstrap($this->appPath);
+
+    $options = ['--features' => [], '--packages' => ['sanctum'], '--sanctum' => 'cookie', '--no-interaction' => true];
+
+    $this->artisan('essentials:install', $options)->assertSuccessful();
+    $this->artisan('essentials:install', $options)->assertSuccessful();
+
+    $bootstrap = (new Filesystem)->get($this->appPath.'/bootstrap/app.php');
+
+    expect(substr_count($bootstrap, 'statefulApi()'))->toBe(1)
+        ->and($bootstrap)->toContain("\$middleware->statefulApi();\n    })");
+});
+
+it('keeps api tokens and a stateless api in token mode', function (): void {
+    Process::fake();
+    stubUserModel($this->appPath);
+    stubBootstrap($this->appPath);
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--packages' => ['sanctum'],
+        '--sanctum' => 'token',
+        '--no-interaction' => true,
+    ])->assertSuccessful();
+
+    $files = new Filesystem;
+
+    expect($files->get($this->appPath.'/app/Models/User.php'))->toContain('use HasApiTokens;')
+        ->and($files->get($this->appPath.'/bootstrap/app.php'))->not->toContain('statefulApi');
+});
+
+it('makes the api stateful only after sanctum is installed', function (): void {
+    Process::fake(['composer require*' => Process::result(exitCode: 1)]);
+    stubBootstrap($this->appPath);
+
+    $this->artisan('essentials:install', [
+        '--features' => [],
+        '--packages' => ['sanctum'],
+        '--sanctum' => 'cookie',
+        '--no-interaction' => true,
+    ])->assertFailed();
+
+    expect((new Filesystem)->get($this->appPath.'/bootstrap/app.php'))->not->toContain('statefulApi');
+});
+
+it('rejects an unknown sanctum mode', function (): void {
+    $this->artisan('essentials:install', ['--packages' => ['sanctum'], '--sanctum' => 'jwt', '--no-interaction' => true])
+        ->expectsOutputToContain('Unknown --sanctum mode "jwt"')
+        ->assertFailed();
+});
+
 it('leaves the user model alone when it does not exist', function (): void {
     Process::fake();
 

@@ -60,6 +60,16 @@ final class InstallCommand extends Command
     private const string PROVIDER_PATH = 'app/Providers/EssentialsServiceProvider.php';
 
     /**
+     * Sanctum issues personal access tokens: HasApiTokens on the User model.
+     */
+    private const string SANCTUM_TOKEN = 'token';
+
+    /**
+     * Sanctum authenticates a first-party SPA through the session cookie.
+     */
+    private const string SANCTUM_COOKIE = 'cookie';
+
+    /**
      * The command signature.
      */
     protected $signature = 'essentials:install
@@ -67,6 +77,7 @@ final class InstallCommand extends Command
         {--packages=* : The Composer packages to install}
         {--redis= : Configure Redis with the given client: none, phpredis, or predis}
         {--redis-cache : Use Redis as the cache store}
+        {--sanctum= : How Sanctum authenticates: token or cookie}
         {--tooling : Install Pint, Larastan, Pest, and Boost}
         {--docker : Write the production Docker deployment files}
         {--timezone : Set the application timezone to Africa/Algiers}
@@ -94,7 +105,7 @@ final class InstallCommand extends Command
     {
         $this->banner();
 
-        if (! $this->validRedisOption()) {
+        if (! $this->validRedisOption() || ! $this->validSanctumOption()) {
             return self::FAILURE;
         }
 
@@ -103,6 +114,7 @@ final class InstallCommand extends Command
         // of Composer output between prompts.
         $features = $this->selectedFeatures();
         $packages = $this->selectedPackages();
+        $sanctum = $this->selectedSanctumMode($packages);
         $redis = $this->selectedRedis();
         $timezone = $this->wants('timezone', 'Set the application timezone to '.self::TIMEZONE.'?');
         $tooling = $this->wants('tooling', 'Install Pint, Larastan, Pest, and Boost?');
@@ -136,7 +148,7 @@ final class InstallCommand extends Command
             },
         );
 
-        $this->installPackages($files, $installer, $packages);
+        $this->installPackages($files, $installer, $packages, $sanctum);
         $this->configureRedis($files, $installer, $redis);
         $this->installTooling($files, $installer, $tooling);
 
@@ -455,7 +467,7 @@ final class InstallCommand extends Command
      *
      * @param  list<Package>  $packages
      */
-    private function installPackages(Filesystem $files, PackageInstaller $installer, array $packages): void
+    private function installPackages(Filesystem $files, PackageInstaller $installer, array $packages, ?string $sanctum): void
     {
         if ($packages === [] || ! $this->canInstall($files)) {
             return;
@@ -489,7 +501,8 @@ final class InstallCommand extends Command
                 $this->runSetup($installer, $package->setup);
                 $this->writePackageFiles($files, $package);
                 $this->appendEnv($files, $package);
-                $this->patchUserModel($files, $package);
+                $this->patchUserModel($files, $package, $sanctum);
+                $this->finishSanctum($files, $package, $sanctum);
                 $this->guardTelescope($files, $package);
                 $this->finishReverb($files, $package);
             }
@@ -533,6 +546,36 @@ final class InstallCommand extends Command
         }
 
         $this->components->info('Added '.implode(', ', $added).' to your environment files.');
+    }
+
+    /**
+     * Make the API routes stateful for cookie authentication.
+     *
+     * statefulApi() resolves Sanctum's middleware at runtime, so it is added
+     * only once Composer has installed Sanctum. The domains, the session cookie
+     * scope, and CORS credentials depend on where the SPA is hosted, which the
+     * kit cannot know, so those are printed rather than guessed.
+     */
+    private function finishSanctum(Filesystem $files, Package $package, ?string $sanctum): void
+    {
+        if ($package->key !== 'sanctum' || $sanctum !== self::SANCTUM_COOKIE) {
+            return;
+        }
+
+        $failure = (new BootstrapPatcher($files, $this->laravel->basePath()))->enableStatefulApi();
+
+        if ($failure === null) {
+            $this->components->info('Enabled $middleware->statefulApi() in bootstrap/app.php for cookie authentication.');
+        } else {
+            $this->components->warn($failure.' Add $middleware->statefulApi() to withMiddleware() manually.');
+        }
+
+        $this->components->info('Cookie authentication still needs settings only you know:');
+        $this->components->bulletList([
+            'SANCTUM_STATEFUL_DOMAINS: the host the SPA is served from, with its port if any',
+            'SESSION_DOMAIN: the parent domain the SPA and the API share, such as .example.dz',
+            "config/cors.php: 'supports_credentials' => true (php artisan config:publish cors)",
+        ]);
     }
 
     /**
@@ -597,11 +640,16 @@ final class InstallCommand extends Command
 
     /**
      * Add a package's traits and interfaces to the application User model.
+     *
+     * HasApiTokens is skipped for cookie authentication: it only backs
+     * personal access tokens, which a session-authenticated SPA never issues.
      */
-    private function patchUserModel(Filesystem $files, Package $package): void
+    private function patchUserModel(Filesystem $files, Package $package, ?string $sanctum): void
     {
+        $traits = $package->key === 'sanctum' && $sanctum === self::SANCTUM_COOKIE ? [] : $package->userTraits;
+
         $added = (new UserModelPatcher($files, $this->laravel->basePath()))
-            ->patch($package->userTraits, $package->userInterfaces);
+            ->patch($traits, $package->userInterfaces);
 
         if ($added === []) {
             return;
@@ -687,6 +735,56 @@ final class InstallCommand extends Command
         $this->components->error('Unknown --redis client "'.$client.'". Use '.implode(', ', $allowed).'.');
 
         return false;
+    }
+
+    /**
+     * Reject a --sanctum value that names no mode the kit can configure.
+     */
+    private function validSanctumOption(): bool
+    {
+        $mode = $this->option('sanctum');
+
+        if ($mode === null || in_array($mode, [self::SANCTUM_TOKEN, self::SANCTUM_COOKIE], true)) {
+            return true;
+        }
+
+        $this->components->error('Unknown --sanctum mode "'.$mode.'". Use token or cookie.');
+
+        return false;
+    }
+
+    /**
+     * Resolve how Sanctum authenticates, or null when Sanctum is not installed.
+     *
+     * Token stays the non-interactive default, which is what the kit did before
+     * the choice existed.
+     *
+     * @param  list<Package>  $packages
+     */
+    private function selectedSanctumMode(array $packages): ?string
+    {
+        if (array_filter($packages, static fn (Package $package): bool => $package->key === 'sanctum') === []) {
+            return null;
+        }
+
+        $mode = $this->option('sanctum');
+
+        if (is_string($mode)) {
+            return $mode;
+        }
+
+        if (! $this->input->isInteractive()) {
+            return self::SANCTUM_TOKEN;
+        }
+
+        return (string) select(
+            label: 'How will clients authenticate through Sanctum?',
+            options: [
+                self::SANCTUM_TOKEN => 'API tokens — mobile apps and other clients send a bearer token',
+                self::SANCTUM_COOKIE => 'Session cookies — a first-party SPA on the same parent domain',
+            ],
+            default: self::SANCTUM_TOKEN,
+        );
     }
 
     /**

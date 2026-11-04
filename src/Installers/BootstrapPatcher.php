@@ -19,6 +19,11 @@ final class BootstrapPatcher
         'App\Http\Middleware\RequestId',
     ];
 
+    /**
+     * The opening of the withMiddleware() closure, with its empty placeholder.
+     */
+    private const string MIDDLEWARE_CLOSURE = '/(->withMiddleware\(function \(Middleware \$middleware\)[^{]*\{\n)(\h*\/\/\n)?/';
+
     public function __construct(
         private readonly Filesystem $files,
         private readonly string $basePath,
@@ -62,6 +67,50 @@ final class BootstrapPatcher
     }
 
     /**
+     * Make the api route group stateful, for Sanctum cookie authentication.
+     *
+     * Returns null when the call was added or was already present, and an
+     * explanation when the developer has to add it by hand.
+     */
+    public function enableStatefulApi(): ?string
+    {
+        $path = $this->basePath.'/bootstrap/app.php';
+
+        if (! $this->files->exists($path)) {
+            return 'bootstrap/app.php was not found.';
+        }
+
+        $contents = $this->files->get($path);
+
+        if (str_contains($contents, 'statefulApi(')) {
+            return null;
+        }
+
+        // A blank line separates the call from code already in the closure,
+        // such as the API middleware, but not from the closing brace.
+        $empty = preg_match(self::MIDDLEWARE_CLOSURE, $contents, $matches) === 1
+            && ($matches[2] ?? '') !== '';
+
+        $patched = $this->insertInto(
+            $contents,
+            self::MIDDLEWARE_CLOSURE,
+            <<<'PHP'
+                    // Sanctum cookie authentication for the first-party SPA.
+                    $middleware->statefulApi();
+
+            PHP.($empty ? '' : "\n"),
+        );
+
+        if ($patched === null) {
+            return 'The withMiddleware() call in bootstrap/app.php was not in the expected shape.';
+        }
+
+        $this->files->put($path, $patched);
+
+        return null;
+    }
+
+    /**
      * Append the API middleware to the global stack.
      *
      * trustProxies() is part of this block because every deployment behind a
@@ -74,7 +123,7 @@ final class BootstrapPatcher
     {
         return $this->insertInto(
             $contents,
-            '/(->withMiddleware\(function \(Middleware \$middleware\)[^{]*\{\n)(\h*\/\/\n)?/',
+            self::MIDDLEWARE_CLOSURE,
             <<<'PHP'
                     // Trust every proxy: correct while the application is only
                     // reachable through a reverse proxy. If it is ever published
